@@ -184,7 +184,7 @@
     border-radius: 8px;
     padding: 10px;
     
-    /* FIX: Force fixed dimensions to prevent squishing */
+    /* Force fixed dimensions to prevent squishing */
     height: 190px;
     width: 100%;
     box-sizing: border-box;
