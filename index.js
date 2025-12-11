@@ -18,8 +18,7 @@ async function handleLoadEmbeddings() {
         buttons.prop('disabled', true);
         state.clearData();
 
-        // Changed timeOut to 5000 (5 seconds)
-        toastId = toastr.info(`Preparing ${characters.length} characters...`, 'Loading Embeddings', { timeOut: 5000 });
+        toastId = toastr.info(`Preparing ${characters.length} characters...`, 'Loading Embeddings', { timeOut: 0, extendedTimeOut: 0 });
         
         const results = await fetchEmbeddings(characters);
         
@@ -41,8 +40,7 @@ async function handleLoadEmbeddings() {
 function handleCalculateUniqueness() {
     if (state.embeddings.size === 0) return toastr.warning('Please load embeddings first.');
 
-    // Added explicit timeout
-    toastr.info('Calculating uniqueness scores...', null, { timeOut: 5000 });
+    toastr.info('Calculating uniqueness scores...');
     
     const embeddingsList = Array.from(state.embeddings.values());
     const libraryMean = calculateMeanEmbedding(embeddingsList);
@@ -68,8 +66,7 @@ function handleCalculateClusters() {
     buttons.prop('disabled', true);
 
     const threshold = state.setting.clusterThreshold;
-    // Changed timeOut to 5000 (5 seconds)
-    const toastId = toastr.info(`Clustering at ${threshold.toFixed(2)}...`, 'Clustering', { timeOut: 5000 });
+    const toastId = toastr.info(`Clustering at ${threshold.toFixed(2)}...`, 'Clustering', { timeOut: 0 });
 
     const worker = createClusteringWorker();
     
