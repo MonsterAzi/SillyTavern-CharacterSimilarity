@@ -3,7 +3,15 @@
     "loading_order": 100,
     "requires": [],
     "optional": [],
-    "js": "index.js",
+    "js": [
+        "lib/cluster.js",
+        "src/utils/math.js",
+        "src/utils/dom.js",
+        "src/core/EmbeddingManager.js",
+        "src/core/Analysis.js",
+        "src/ui/Panel.js",
+        "index.js"
+    ],
     "css": "style.css",
     "author": "Azazelle",
     "version": "1.3.0",
