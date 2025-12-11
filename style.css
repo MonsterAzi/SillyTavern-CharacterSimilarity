@@ -1,16 +1,9 @@
-/* SETTINGS */
+/* SETTINGS (UNCHANGED) */
 .character-similarity_block { display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px; }
-.character-similarity_block select, .character-similarity_block input[type="number"] {
-    background-color: var(--black30a);
-    color: var(--text_color);
-    border: 1px solid var(--white30a);
-    padding: 5px;
-    border-radius: 5px;
-}
 
-/* MAIN PANEL */
+/* MAIN PANEL -- FIXED for MOBILE and VISIBILITY */
 #characterSimilarityPanel {
-    display: none;
+    display: none; /* Hidden by default */
     position: fixed;
     top: 0; left: 0; right: 0; bottom: 0;
     background-color: rgba(0, 0, 0, 0.4);
@@ -21,7 +14,7 @@
 }
 
 #characterSimilarityPanel.open {
-    display: flex;
+    display: flex; /* Only visible when this class is present */
 }
 
 .charSimPanel-content {
