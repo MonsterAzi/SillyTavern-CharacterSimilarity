@@ -1,5 +1,4 @@
-// File: /index.js
-
+// Import core functions from SillyTavern
 import { characters, eventSource, event_types } from "../../../script.js";
 
 // Import local modules
@@ -13,18 +12,14 @@ import { createClusteringWorker } from "./modules/clustering.js";
 
 async function handleLoadEmbeddings() {
     const buttons = $('#charSimLoadBtn, #charSimCalcUniquenessBtn, #charSimCalcClustersBtn');
-    let loadingToast = null;
+    let toastId = null;
 
     try {
         buttons.prop('disabled', true);
         state.clearData();
 
-        // Use a spinner icon and capture the specific toast object
-        loadingToast = toastr.info(
-            `<i class="fa-solid fa-spinner fa-spin"></i> Preparing ${characters.length} characters...`, 
-            'Loading Embeddings', 
-            { timeOut: 0, extendedTimeOut: 0, preventDuplicates: true }
-        );
+        // Changed timeOut to 5000 (5 seconds)
+        toastId = toastr.info(`Preparing ${characters.length} characters...`, 'Loading Embeddings', { timeOut: 5000 });
         
         const results = await fetchEmbeddings(characters);
         
@@ -32,11 +27,10 @@ async function handleLoadEmbeddings() {
             state.embeddings.set(res.avatar, res.embedding);
         }
 
-        // Immediately clear the loading toast before showing success
-        if (loadingToast) toastr.clear(loadingToast);
+        toastr.remove(toastId);
         toastr.success(`Successfully loaded embeddings for ${state.embeddings.size} characters.`);
     } catch (error) {
-        if (loadingToast) toastr.clear(loadingToast);
+        if (toastId) toastr.remove(toastId);
         toastr.error(error.message, 'Error');
         console.error("Character Similarity Error:", error);
     } finally {
@@ -47,41 +41,24 @@ async function handleLoadEmbeddings() {
 function handleCalculateUniqueness() {
     if (state.embeddings.size === 0) return toastr.warning('Please load embeddings first.');
 
-    // Add spinner here too for consistency, even if it is usually fast
-    const calcToast = toastr.info(
-        '<i class="fa-solid fa-spinner fa-spin"></i> Calculating...', 
-        '', 
-        { timeOut: 0, extendedTimeOut: 0 }
-    );
+    // Added explicit timeout
+    toastr.info('Calculating uniqueness scores...', null, { timeOut: 5000 });
     
-    // Allow UI to render the toast before freezing main thread with math
-    setTimeout(() => {
-        try {
-            const embeddingsList = Array.from(state.embeddings.values());
-            const libraryMean = calculateMeanEmbedding(embeddingsList);
-            
-            if (!libraryMean) {
-                toastr.clear(calcToast);
-                return toastr.error('Calculation failed.');
-            }
+    const embeddingsList = Array.from(state.embeddings.values());
+    const libraryMean = calculateMeanEmbedding(embeddingsList);
+    
+    if (!libraryMean) return toastr.error('Calculation failed.');
 
-            const results = [];
-            for (const [avatar, embedding] of state.embeddings.entries()) {
-                const distance = calculateManhattanDistance(embedding, libraryMean);
-                const char = characters.find(c => c.avatar === avatar);
-                if (char) results.push({ avatar, name: char.name, distance });
-            }
+    const results = [];
+    for (const [avatar, embedding] of state.embeddings.entries()) {
+        const distance = calculateManhattanDistance(embedding, libraryMean);
+        const char = characters.find(c => c.avatar === avatar);
+        if (char) results.push({ avatar, name: char.name, distance });
+    }
 
-            state.uniquenessResults = results;
-            UIManager.renderCharacterList('#charSimUniquenessList', state.uniquenessResults);
-            
-            toastr.clear(calcToast);
-            toastr.success('Calculation complete.');
-        } catch (e) {
-            toastr.clear(calcToast);
-            toastr.error(e.message);
-        }
-    }, 50);
+    state.uniquenessResults = results;
+    UIManager.renderCharacterList('#charSimUniquenessList', state.uniquenessResults);
+    toastr.success('Calculation complete.');
 }
 
 function handleCalculateClusters() {
@@ -91,13 +68,8 @@ function handleCalculateClusters() {
     buttons.prop('disabled', true);
 
     const threshold = state.setting.clusterThreshold;
-    
-    // Persistent toast with spinner
-    const loadingToast = toastr.info(
-        `<i class="fa-solid fa-spinner fa-spin"></i> Clustering at ${threshold.toFixed(2)}...`, 
-        'Clustering', 
-        { timeOut: 0, extendedTimeOut: 0 }
-    );
+    // Changed timeOut to 5000 (5 seconds)
+    const toastId = toastr.info(`Clustering at ${threshold.toFixed(2)}...`, 'Clustering', { timeOut: 5000 });
 
     const worker = createClusteringWorker();
     
@@ -109,17 +81,14 @@ function handleCalculateClusters() {
     worker.onmessage = (e) => {
         const groups = e.data;
         processClusterResults(groups);
-        
-        // Clear loading, show success
-        toastr.clear(loadingToast);
+        toastr.remove(toastId);
         toastr.success(`Found ${state.clusterResults.filter(g => g.members.length > 1).length} groups.`);
-        
         buttons.prop('disabled', false);
         worker.terminate();
     };
 
     worker.onerror = (err) => {
-        toastr.clear(loadingToast);
+        toastr.remove(toastId);
         toastr.error('Worker error: ' + err.message);
         buttons.prop('disabled', false);
         worker.terminate();
@@ -204,5 +173,6 @@ jQuery(() => {
 
     // Handle character reload event
     eventSource.on(event_types.APP_READY, () => {
+        // Optional: clear cache on reload or just let user re-click load
     });
 });
