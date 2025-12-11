@@ -13,6 +13,8 @@ import {
 const EXTENSION_NAME = "character_similarity";
 const DEFAULT_SETTINGS = {
     koboldUrl: 'http://127.0.0.1:5001',
+    uniquenessMethod: 'mean',
+    uniquenessN: 20,
 };
 
 // Fields to use for embedding generation
@@ -161,7 +163,21 @@ class UIManager {
                     <div id="charSimView_uniqueness" class="charSim-view active">
                         <div class="charSim-controls">
                             <div id="charSimBtn_load" class="menu_button">Load Embeddings</div>
+                            
+                            <select id="charSimSelect_method" class="text_pole charSim-select">
+                                <option value="mean">Global Mean Distance</option>
+                                <option value="isolation">Isolation Forest</option>
+                                <option value="lof">Local Outlier Factor</option>
+                                <option value="knn">kNN Distance</option>
+                            </select>
+
+                            <div id="charSim_param_container" class="charSim-param-group">
+                                <label for="charSimInput_n">N:</label>
+                                <input id="charSimInput_n" type="number" class="text_pole" min="1" value="20" />
+                            </div>
+
                             <div id="charSimBtn_calcUnique" class="menu_button">Calculate Uniqueness</div>
+                            
                             <div class="charSim-spacer"></div>
                             <div id="charSimBtn_sort" class="menu_button menu_button_icon fa-solid fa-arrow-down" title="Toggle Sort"></div>
                         </div>
@@ -189,6 +205,11 @@ class UIManager {
         const btnContainer = $('#rm_buttons_container');
         if (btnContainer.length) btnContainer.append(openBtn);
         else $('#form_character_search_form').before(openBtn);
+
+        // Set initial state from settings
+        $('#charSimSelect_method').val(this.ext.settings.uniquenessMethod);
+        $('#charSimInput_n').val(this.ext.settings.uniquenessN);
+        this.toggleParamInput(this.ext.settings.uniquenessMethod);
 
         this.bindEvents();
     }
@@ -218,6 +239,17 @@ class UIManager {
             this.ext.toggleSort();
         });
 
+        // Dropdown & Params
+        $('#charSimSelect_method').on('change', (e) => {
+            const val = e.target.value;
+            this.toggleParamInput(val);
+            this.ext.updateSetting('uniquenessMethod', val);
+        });
+
+        $('#charSimInput_n').on('change', (e) => {
+            this.ext.updateSetting('uniquenessN', parseInt(e.target.value) || 20);
+        });
+
         // Filter Characters
         $('#charSimInput_filter').on('input', (e) => {
             const term = e.target.value.toLowerCase();
@@ -226,6 +258,11 @@ class UIManager {
                 $(this).toggle(name.includes(term));
             });
         });
+    }
+
+    toggleParamInput(method) {
+        const show = ['isolation', 'lof', 'knn'].includes(method);
+        $('#charSim_param_container').css('display', show ? 'flex' : 'none');
     }
 
     renderUniquenessList(items, isDescending) {
@@ -241,7 +278,7 @@ class UIManager {
             <div class="charSim-item" data-avatar="${item.avatar}">
                 <img src="${getThumbnailUrl('avatar', item.avatar)}" />
                 <span class="charSim-item-name">${item.name}</span>
-                <span class="charSim-item-score" title="Distance from average">${item.distance.toFixed(4)}</span>
+                <span class="charSim-item-score" title="Uniqueness Score">${item.distance.toFixed(4)}</span>
             </div>
         `).join('');
         container.html(html);
@@ -345,6 +382,8 @@ class CharacterSimilarityExtension {
         if (this.embeddings.size === 0) return toastr.warning("Please load embeddings first.");
         
         try {
+            // Note: Actual logic implementation for different methods is pending.
+            // Currently defaults to Global Mean Distance.
             const results = ComputeEngine.computeUniqueness(this.embeddings);
             
             // Map names back
