@@ -208,13 +208,33 @@ class ComputeEngine {
         return mean;
     }
 
-    static calculateEuclideanDistance(vecA, vecB) {
+    static calculateDotProduct(vecA, vecB) {
         let sum = 0;
         for (let i = 0; i < vecA.length; i++) {
-            const diff = vecA[i] - vecB[i];
-            sum += diff * diff;
+            sum += vecA[i] * vecB[i];
+        }
+        return sum;
+    }
+
+    static calculateMagnitude(vec) {
+        let sum = 0;
+        for (let i = 0; i < vec.length; i++) {
+            sum += vec[i] * vec[i];
         }
         return Math.sqrt(sum);
+    }
+
+    static calculateCosineSimilarity(vecA, vecB) {
+        const dot = this.calculateDotProduct(vecA, vecB);
+        const magA = this.calculateMagnitude(vecA);
+        const magB = this.calculateMagnitude(vecB);
+        if (magA === 0 || magB === 0) return 0;
+        return dot / (magA * magB);
+    }
+
+    static calculateCosineDistance(vecA, vecB) {
+        // Distance = 1 - Similarity
+        return 1 - this.calculateCosineSimilarity(vecA, vecB);
     }
 
     static normalizeScores(results) {
@@ -241,7 +261,8 @@ class ComputeEngine {
 
         const results = [];
         for (const [avatar, vec] of embeddingMap.entries()) {
-            const distance = this.calculateEuclideanDistance(vec, mean);
+            // Using Cosine Distance for uniqueness calculation
+            const distance = this.calculateCosineDistance(vec, mean);
             results.push({ avatar, distance });
         }
         return results;
@@ -259,7 +280,8 @@ class ComputeEngine {
 
             for (let j = 0; j < n; j++) {
                 if (i === j) continue;
-                const d = this.calculateEuclideanDistance(currentVec, entries[j][1]);
+                // Cosine Distance
+                const d = this.calculateCosineDistance(currentVec, entries[j][1]);
                 distances.push(d);
             }
 
@@ -284,7 +306,8 @@ class ComputeEngine {
             const dists = [];
             for (let j = 0; j < n; j++) {
                 if (i === j) continue;
-                dists.push({ idx: j, dist: this.calculateEuclideanDistance(vecA, entries[j][1]) });
+                // Cosine Distance
+                dists.push({ idx: j, dist: this.calculateCosineDistance(vecA, entries[j][1]) });
             }
             dists.sort((a, b) => a.dist - b.dist);
             
@@ -513,7 +536,8 @@ class ComputeEngine {
             const dists = [];
             for(let i=0; i<n; i++) {
                 if(isRealIndex === i) continue;
-                dists.push(this.calculateEuclideanDistance(queryPoint, realData[i]));
+                // Cosine Distance used for graph structure
+                dists.push(this.calculateCosineDistance(queryPoint, realData[i]));
             }
             dists.sort((a,b) => a - b);
             return dists.slice(0, neighborCount);
@@ -950,7 +974,7 @@ class UIManager {
         }
 
         const html = batch.map(s => {
-            const percent = Math.round((1 - s.distance) * 100) + '%';
+            const percent = Math.round(s.similarity * 100) + '%';
             return `
                 <div class="charSim-grid-card" title="${s.name}" data-avatar="${s.avatar}">
                     <div class="charSim-card-img-wrapper" style="position:relative;">
@@ -1135,51 +1159,49 @@ class CharacterSimilarityExtension {
 
     /**
      * Finds characters similar to target using Multi-Model Caching
+     * Uses Cosine Similarity (Higher is better)
      */
     getSimilarCharacters(targetAvatar) {
         if (this.validCaches.length === 0) return [];
         
-        const compositeDistances = new Map(); // avatar -> totalDistance
+        const compositeSimilarities = new Map(); // avatar -> totalSimilarity
 
         for (const cacheObj of this.validCaches) {
             const map = cacheObj.map;
             const targetVec = map.get(targetAvatar);
             if (!targetVec) continue;
 
-            // Calculate distances for this model
-            let maxDist = 0;
-            const currentDistances = [];
+            const currentSimilarities = [];
 
             for (const [avatar, vec] of map.entries()) {
                 if (avatar === targetAvatar) continue;
-                const dist = ComputeEngine.calculateEuclideanDistance(targetVec, vec);
-                if (dist > maxDist) maxDist = dist;
-                currentDistances.push({ avatar, dist });
+                // Calculate Raw Cosine Similarity (0.0 to 1.0)
+                const sim = ComputeEngine.calculateCosineSimilarity(targetVec, vec);
+                currentSimilarities.push({ avatar, sim });
             }
 
-            // Normalize and accumulate
-            for (const item of currentDistances) {
-                const norm = maxDist > 0 ? item.dist / maxDist : 0;
-                const prev = compositeDistances.get(item.avatar) || 0;
-                compositeDistances.set(item.avatar, prev + norm);
+            // Accumulate
+            for (const item of currentSimilarities) {
+                const prev = compositeSimilarities.get(item.avatar) || 0;
+                compositeSimilarities.set(item.avatar, prev + item.sim);
             }
         }
 
-        // Average and Sort
+        // Average and Sort Descending
         const results = [];
         const count = this.validCaches.length;
-        for (const [avatar, total] of compositeDistances.entries()) {
+        for (const [avatar, total] of compositeSimilarities.entries()) {
             const char = characters.find(c => c.avatar === avatar);
             if (char) {
                 results.push({
                     avatar,
                     name: char.name,
-                    distance: total / count
+                    similarity: total / count
                 });
             }
         }
 
-        return results.sort((a, b) => a.distance - b.distance);
+        return results.sort((a, b) => b.similarity - a.similarity);
     }
 
     toggleSort() {
