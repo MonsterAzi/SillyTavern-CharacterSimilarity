@@ -95,7 +95,6 @@ class ComputeEngine {
         return mean;
     }
 
-    // Standard Euclidean Distance (L2)
     static calculateEuclideanDistance(vecA, vecB) {
         let sum = 0;
         for (let i = 0; i < vecA.length; i++) {
@@ -105,11 +104,24 @@ class ComputeEngine {
         return Math.sqrt(sum);
     }
 
+    static normalizeScores(results) {
+        if (!results || results.length === 0) return [];
+        const scores = results.map(r => r.distance);
+        const min = Math.min(...scores);
+        const max = Math.max(...scores);
+        const range = max - min;
+        
+        // If all scores are identical, return 0 (no relative uniqueness)
+        if (range === 0) return results.map(r => ({ ...r, distance: 0 }));
+
+        return results.map(r => ({
+            ...r,
+            distance: (r.distance - min) / range
+        }));
+    }
+
     // --- Algorithms ---
 
-    /**
-     * Algorithm 1: Global Mean Distance
-     */
     static computeGlobalMeanUniqueness(embeddingMap) {
         const vectors = Array.from(embeddingMap.values());
         const mean = this.calculateMeanVector(vectors);
@@ -123,11 +135,8 @@ class ComputeEngine {
         return results;
     }
 
-    /**
-     * Algorithm 2: k-Nearest Neighbors (kNN) Outlier Score
-     */
     static computeKNNUniqueness(embeddingMap, k) {
-        const entries = Array.from(embeddingMap.entries()); // [[avatar, vec], ...]
+        const entries = Array.from(embeddingMap.entries());
         const n = entries.length;
         const neighborCount = Math.max(1, Math.min(k, n - 1));
         const results = [];
@@ -144,7 +153,6 @@ class ComputeEngine {
 
             distances.sort((a, b) => a - b);
             const kNearest = distances.slice(0, neighborCount);
-            
             const avgDist = kNearest.reduce((acc, val) => acc + val, 0) / neighborCount;
             results.push({ avatar: currentAvatar, distance: avgDist });
         }
@@ -152,15 +160,11 @@ class ComputeEngine {
         return results;
     }
 
-    /**
-     * Algorithm 3: Local Outlier Factor (LOF)
-     */
     static computeLOF(embeddingMap, k) {
         const entries = Array.from(embeddingMap.entries());
         const n = entries.length;
         const neighborCount = Math.max(1, Math.min(k, n - 1));
 
-        // 1. Find neighbors and k-distance
         const neighborhoodInfo = new Array(n);
 
         for (let i = 0; i < n; i++) {
@@ -174,55 +178,41 @@ class ComputeEngine {
             
             const neighbors = dists.slice(0, neighborCount);
             const kDistance = neighbors[neighborCount - 1].dist;
-            
             neighborhoodInfo[i] = { neighbors, kDistance };
         }
 
-        // 2. Reachability Distance and LRD
         const lrd = new Float32Array(n);
-
         for (let i = 0; i < n; i++) {
             const { neighbors } = neighborhoodInfo[i];
             let sumReachDist = 0;
-
             for (const neighbor of neighbors) {
                 const neighborIdx = neighbor.idx;
                 const distToNeighbor = neighbor.dist;
                 const neighborKDist = neighborhoodInfo[neighborIdx].kDistance;
-                
                 const reachDist = Math.max(neighborKDist, distToNeighbor);
                 sumReachDist += reachDist;
             }
-
             const avgReachDist = sumReachDist / neighborCount;
             lrd[i] = avgReachDist > 0 ? (1 / avgReachDist) : 0;
         }
 
-        // 3. LOF Score
         const results = [];
         for (let i = 0; i < n; i++) {
             const { neighbors } = neighborhoodInfo[i];
             let sumNeighborLrd = 0;
-            
             for (const neighbor of neighbors) {
                 sumNeighborLrd += lrd[neighbor.idx];
             }
-
             const currentLrd = lrd[i];
             let score = 0;
             if (currentLrd > 0) {
                 score = (sumNeighborLrd / neighborCount) / currentLrd;
             }
-
             results.push({ avatar: entries[i][0], distance: score });
         }
-
         return results;
     }
 
-    /**
-     * Algorithm 4: Isolation Forest
-     */
     static computeIsolationForest(embeddingMap, nTrees = 100) {
         const entries = Array.from(embeddingMap.entries());
         const data = entries.map(e => e[1]);
@@ -236,11 +226,9 @@ class ComputeEngine {
             return 2 * (Math.log(size - 1) + 0.5772156649) - (2 * (size - 1) / size);
         };
         const avgPathLengthNormalization = c(subsampleSize);
-
         const pathLengths = new Float32Array(n).fill(0);
 
         for (let t = 0; t < nTrees; t++) {
-            // Subsample
             const indices = [];
             for(let i=0; i<n; i++) indices.push(i);
             for (let i = indices.length - 1; i > 0; i--) {
@@ -248,12 +236,10 @@ class ComputeEngine {
                 [indices[i], indices[j]] = [indices[j], indices[i]];
             }
             
-            // Build & Evaluate Tree recursively
             const buildAndEvaluate = (currentIndices, currentDepth) => {
                 if (currentDepth >= heightLimit || currentIndices.length <= 1) {
                     return;
                 }
-
                 const feature = Math.floor(Math.random() * dim);
                 let min = Infinity, max = -Infinity;
                 for(const idx of currentIndices) {
@@ -261,23 +247,18 @@ class ComputeEngine {
                     if(val < min) min = val;
                     if(val > max) max = val;
                 }
-                
                 if (min === max) return;
-
                 const splitValue = Math.random() * (max - min) + min;
                 const left = [];
                 const right = [];
-
                 for (const idx of currentIndices) {
                     pathLengths[idx]++;
                     if (data[idx][feature] < splitValue) left.push(idx);
                     else right.push(idx);
                 }
-
                 buildAndEvaluate(left, currentDepth + 1);
                 buildAndEvaluate(right, currentDepth + 1);
             };
-
             buildAndEvaluate(indices, 0);
         }
 
@@ -287,13 +268,9 @@ class ComputeEngine {
             const score = Math.pow(2, -(avgPathLen) / avgPathLengthNormalization);
             results.push({ avatar: entries[i][0], distance: score });
         }
-
         return results;
     }
 
-    /**
-     * Algorithm 5: ECOD
-     */
     static computeECOD(embeddingMap) {
         const entries = Array.from(embeddingMap.entries());
         const data = entries.map(e => e[1]);
@@ -309,7 +286,6 @@ class ComputeEngine {
             
             const indices = new Int32Array(n);
             for(let i=0; i<n; i++) indices[i] = i;
-            
             indices.sort((a, b) => column[a] - column[b]);
             
             for(let r=0; r<n; r++) {
@@ -318,7 +294,6 @@ class ComputeEngine {
                 const pRight = (n - r) / (n + 1);
                 const sLeft = -Math.log(pLeft);
                 const sRight = -Math.log(pRight);
-                
                 scores[originalIndex] += Math.max(sLeft, sRight);
             }
         }
@@ -330,16 +305,12 @@ class ComputeEngine {
         return results;
     }
 
-    /**
-     * Algorithm 6: HBOS
-     */
     static computeHBOS(embeddingMap) {
         const entries = Array.from(embeddingMap.entries());
         const data = entries.map(e => e[1]);
         const n = data.length;
         if (n === 0) return [];
         const dim = data[0].length;
-        
         const scores = new Float32Array(n).fill(0);
 
         for (let d = 0; d < dim; d++) {
@@ -389,7 +360,6 @@ class ComputeEngine {
                     binIdx = Math.floor((col[i] - min) / step);
                     if (binIdx >= binCount) binIdx = binCount - 1;
                 }
-                
                 const count = hist[binIdx];
                 if (count > 0) {
                     scores[i] += Math.log(n / count);
@@ -406,13 +376,8 @@ class ComputeEngine {
         return results;
     }
 
-    /**
-     * Algorithm 7: LUNAR (Local Outlier Detection via Graph Neural Networks)
-     * Implementation: Uses a lightweight Neural Network trained on the fly
-     * to distinguish between Real KNN Distances and Negative Sample KNN Distances.
-     */
     static computeLUNAR(embeddingMap, k) {
-        const entries = Array.from(embeddingMap.entries()); // [[avatar, vec], ...]
+        const entries = Array.from(embeddingMap.entries());
         const realData = entries.map(e => e[1]);
         const n = realData.length;
         if (n < 2) return [];
@@ -420,80 +385,61 @@ class ComputeEngine {
         const dim = realData[0].length;
         const neighborCount = Math.max(1, Math.min(k, n - 1));
 
-        // 1. Generate Negative Samples (Gaussian noise around real data)
         const negativeData = [];
-        // Calculate std dev for noise scale
-        let varianceSum = 0;
-        for(let i=0; i<n; i++) {
-            for(let j=0; j<dim; j++) varianceSum += realData[i][j]*realData[i][j];
-        }
-        const noiseScale = 0.1; // Epsilon parameter
+        const noiseScale = 0.1;
 
         for(let i=0; i<n; i++) {
             const noise = new Float32Array(dim);
             for(let d=0; d<dim; d++) {
-                // Approximate Gaussian: sum of 3 uniform randoms
                 const g = (Math.random() + Math.random() + Math.random() - 1.5) * 2; 
                 noise[d] = realData[i][d] + (g * noiseScale);
             }
             negativeData.push(noise);
         }
 
-        // 2. Compute Distances to K-Nearest Real Neighbors
-        // For Real points -> distance to other real points
-        // For Neg points -> distance to real points
         const getKNN = (queryPoint, isRealIndex) => {
             const dists = [];
             for(let i=0; i<n; i++) {
-                if(isRealIndex === i) continue; // Don't match self
+                if(isRealIndex === i) continue;
                 dists.push(this.calculateEuclideanDistance(queryPoint, realData[i]));
             }
             dists.sort((a,b) => a - b);
             return dists.slice(0, neighborCount);
         };
 
-        const X_real = []; // Features for real data
+        const X_real = [];
         for(let i=0; i<n; i++) X_real.push(getKNN(realData[i], i));
 
-        const X_neg = []; // Features for negative data
+        const X_neg = [];
         for(let i=0; i<n; i++) X_neg.push(getKNN(negativeData[i], -1));
 
-        // 3. Mini Neural Network Training (Tiny MLP in pure JS)
-        // Architecture: Input(k) -> Dense(16, ReLU) -> Dense(1, Sigmoid)
         const hiddenSize = 16;
         const learningRate = 0.1;
         const epochs = 50;
 
-        // Weights
         const W1 = new Float32Array(neighborCount * hiddenSize).map(() => Math.random() * 0.2 - 0.1);
         const b1 = new Float32Array(hiddenSize).fill(0);
         const W2 = new Float32Array(hiddenSize).map(() => Math.random() * 0.2 - 0.1);
         let b2 = 0;
 
-        // Helper: Forward Pass
         const forward = (input) => {
-            // Layer 1
             const h = new Float32Array(hiddenSize);
             for(let i=0; i<hiddenSize; i++) {
                 let sum = b1[i];
                 for(let j=0; j<neighborCount; j++) {
                     sum += input[j] * W1[j*hiddenSize + i];
                 }
-                h[i] = sum > 0 ? sum : 0; // ReLU
+                h[i] = sum > 0 ? sum : 0;
             }
-            // Layer 2
             let z = b2;
             for(let i=0; i<hiddenSize; i++) {
                 z += h[i] * W2[i];
             }
-            const pred = 1 / (1 + Math.exp(-z)); // Sigmoid
+            const pred = 1 / (1 + Math.exp(-z));
             return { h, pred };
         };
 
-        // Training Loop (SGD)
-        // Label 0 for Real, 1 for Negative (Outlier)
         for(let epoch=0; epoch<epochs; epoch++) {
-            // Shuffle
             const indices = [];
             for(let i=0; i<n*2; i++) indices.push(i);
             indices.sort(() => Math.random() - 0.5);
@@ -504,25 +450,19 @@ class ComputeEngine {
                 const target = isReal ? 0 : 1;
 
                 const { h, pred } = forward(features);
-                
-                // Backprop (MSE Loss derivative w.r.t logits implies: (pred - target) * pred * (1-pred))
-                // Or simplified CrossEntropy? Let's use simple error signal.
-                const error = pred - target; // Derivative of MSE with Sigmoid
-                const gradOut = error * (pred * (1 - pred)); // Sigmoid derivative
+                const error = pred - target;
+                const gradOut = error * (pred * (1 - pred));
 
-                // Update W2, b2
                 for(let i=0; i<hiddenSize; i++) {
                     const grad = gradOut * h[i];
                     W2[i] -= learningRate * grad;
                 }
                 b2 -= learningRate * gradOut;
 
-                // Update W1, b1
                 for(let i=0; i<hiddenSize; i++) {
                     const gradH = gradOut * W2[i];
                     const gradReLU = h[i] > 0 ? 1 : 0;
                     const gradLayer1 = gradH * gradReLU;
-                    
                     b1[i] -= learningRate * gradLayer1;
                     for(let j=0; j<neighborCount; j++) {
                         W1[j*hiddenSize + i] -= learningRate * gradLayer1 * features[j];
@@ -531,13 +471,72 @@ class ComputeEngine {
             }
         }
 
-        // 4. Inference
         const results = [];
         for(let i=0; i<n; i++) {
             const { pred } = forward(X_real[i]);
             results.push({ avatar: entries[i][0], distance: pred });
         }
         return results;
+    }
+
+    /**
+     * Algorithm 8: LODA (Ensemble)
+     * Aggregates 9 different outlier detection methods.
+     */
+    static computeLODAEnsemble(embeddingMap) {
+        const n = embeddingMap.size;
+        if (n < 2) return [];
+
+        // Parameters derived from n
+        const n_sqrt = Math.sqrt(n);
+        const k_025 = Math.max(1, Math.round(Math.pow(n, 0.25)));
+        const k_050 = Math.max(1, Math.round(n_sqrt));
+        const k_075 = Math.max(1, Math.round(Math.pow(n, 0.75)));
+        
+        // Collect raw results
+        const rawResults = [];
+        
+        // 1. kNN (root of root)
+        rawResults.push(this.normalizeScores(this.computeKNNUniqueness(embeddingMap, k_025)));
+        // 2. kNN (root)
+        rawResults.push(this.normalizeScores(this.computeKNNUniqueness(embeddingMap, k_050)));
+        // 3. kNN (root ^ 1.5)
+        rawResults.push(this.normalizeScores(this.computeKNNUniqueness(embeddingMap, k_075)));
+        
+        // 4. LOF (10)
+        rawResults.push(this.normalizeScores(this.computeLOF(embeddingMap, 10)));
+        // 5. LOF (30)
+        rawResults.push(this.normalizeScores(this.computeLOF(embeddingMap, 30)));
+        
+        // 6. Isolation Forest (100)
+        rawResults.push(this.normalizeScores(this.computeIsolationForest(embeddingMap, 100)));
+        
+        // 7. HBOS
+        rawResults.push(this.normalizeScores(this.computeHBOS(embeddingMap)));
+        
+        // 8. ECOD
+        rawResults.push(this.normalizeScores(this.computeECOD(embeddingMap)));
+        
+        // 9. LUNAR (root)
+        rawResults.push(this.normalizeScores(this.computeLUNAR(embeddingMap, k_050)));
+
+        // Aggregation (Average)
+        const aggregated = new Map();
+        
+        for (const resultSet of rawResults) {
+            for (const item of resultSet) {
+                const prev = aggregated.get(item.avatar) || 0;
+                aggregated.set(item.avatar, prev + item.distance);
+            }
+        }
+
+        const finalResults = [];
+        const count = rawResults.length;
+        for (const [avatar, totalScore] of aggregated.entries()) {
+            finalResults.push({ avatar, distance: totalScore / count });
+        }
+
+        return finalResults;
     }
 }
 
@@ -588,6 +587,7 @@ class UIManager {
                             
                             <select id="charSimSelect_method" class="text_pole charSim-select">
                                 <option value="mean">Global Mean Distance</option>
+                                <option value="loda">LODA (Ensemble)</option>
                                 <option value="lunar">LUNAR (GNN)</option>
                                 <option value="hbos">HBOS (Birgé-Rozenblac)</option>
                                 <option value="ecod">ECOD (Parameter-free)</option>
@@ -822,6 +822,9 @@ class CharacterSimilarityExtension {
                 let results = [];
 
                 switch (method) {
+                    case 'loda':
+                        results = ComputeEngine.computeLODAEnsemble(this.embeddings);
+                        break;
                     case 'lunar':
                         results = ComputeEngine.computeLUNAR(this.embeddings, n);
                         break;
