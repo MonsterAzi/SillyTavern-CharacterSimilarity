@@ -6,7 +6,8 @@ import {
     saveSettingsDebounced, 
     eventSource, 
     event_types, 
-    getRequestHeaders 
+    getRequestHeaders,
+    select_character 
 } from "../../../../script.js";
 
 // --- Constants & Config ---
@@ -1094,6 +1095,18 @@ class UIManager {
              this.showCharacterDetails(actualAvatar);
         });
 
+        $('#characterSimilarityPanel').on('click', '.charSim-details-img', (e) => {
+            const avatar = $(e.currentTarget).data('avatar');
+            if (avatar) {
+                const character = characters.find(c => c.avatar === avatar);
+                if (character) {
+                    select_character(character.avatar);
+                    toastr.success(`Loaded character: ${character.name}`);
+                    $('#characterSimilarityPanel').removeClass('open');
+                }
+            }
+        });
+
         $('#charSimBtn_back').on('click', () => {
              $('#charSimView_details').removeClass('active');
              $('#charSimView_characters').addClass('active');
@@ -1285,7 +1298,7 @@ class UIManager {
 
         const html = `
             <div class="charSim-details-header">
-                <img src="${getThumbnailUrl('avatar', avatar)}" class="charSim-details-img">
+                <img src="${getThumbnailUrl('avatar', avatar)}" class="charSim-details-img" data-avatar="${avatar}" title="Click to load character">
                 <div class="charSim-details-info">
                     <h1>${char.name}</h1>
                     <div style="display:flex; align-items:center; gap: 10px;">
