@@ -77,46 +77,39 @@ class SimilarityService {
     }
 
     /**
-     * Fetches embeddings with Caching support.
-     * @param {Array<{avatar:string, text:string}>} items 
-     * @returns {Promise<Map<string, number[]>>} Map of avatar -> embedding vector
+     * Updates the Live Model cache.
+     * @param {Array<{avatar:string, text:string, hash:string}>} items 
      */
-    async fetchEmbeddings(items) {
+    async updateLiveCache(items) {
         const url = this.koboldUrl;
         if (!url) throw new Error("KoboldCpp URL is not configured.");
 
         // 1. Identify Model
         const modelName = await this.getModelName();
-        // Console log removed to reduce spam, using Toastr for user feedback
-
+        
         // 2. Load Cache
         if (!extension_settings[CACHE_KEY]) extension_settings[CACHE_KEY] = {};
         if (!extension_settings[CACHE_KEY][modelName]) extension_settings[CACHE_KEY][modelName] = {};
         
         const currentCache = extension_settings[CACHE_KEY][modelName];
-        const finalMap = new Map();
         const toRequest = [];
+        const toRequestIndices = [];
         
-        // 3. Diffing (Check Cache)
+        // 3. Check Cache
         for (let i = 0; i < items.length; i++) {
             const item = items[i];
-            const currentHash = await hashText(item.text);
             const cached = currentCache[item.avatar];
 
-            if (cached && cached.hash === currentHash && cached.vector) {
-                // Hit
-                finalMap.set(item.avatar, cached.vector);
-            } else {
-                // Miss (New or Changed)
+            // If missing or hash mismatch, we need to fetch
+            if (!cached || cached.hash !== item.hash || !cached.vector) {
                 toRequest.push(item);
-                // Temporarily store hash to save later
-                item._newHash = currentHash; 
+                toRequestIndices.push(i);
             }
         }
 
         // 4. Batch Request (only if needed)
         if (toRequest.length > 0) {
-            toastr.info(`Embedding ${toRequest.length} new or modified characters...`);
+            toastr.info(`Updating live cache (${modelName}): Embedding ${toRequest.length} items...`);
 
             const response = await fetch('/api/backends/kobold/embed', {
                 method: 'POST',
@@ -134,17 +127,12 @@ class SimilarityService {
             const data = await response.json();
             if (!data.embeddings) throw new Error("Invalid response format.");
 
-            // 5. Update Cache & Final Map
+            // 5. Update Persistent Cache
             data.embeddings.forEach((vec, idx) => {
                 if (vec && vec.length > 0) {
                     const originalItem = toRequest[idx];
-                    
-                    // Update Memory Map
-                    finalMap.set(originalItem.avatar, vec);
-
-                    // Update Persistent Cache
                     currentCache[originalItem.avatar] = {
-                        hash: originalItem._newHash,
+                        hash: originalItem.hash,
                         vector: vec
                     };
                 }
@@ -153,10 +141,44 @@ class SimilarityService {
             // Persist
             extension_settings[CACHE_KEY][modelName] = currentCache;
             saveSettingsDebounced();
-            toastr.success(`Processed ${toRequest.length} new embeddings.`);
+            toastr.success(`Updated cache for ${modelName}.`);
+        }
+    }
+
+    /**
+     * Retrieves ALL valid model caches.
+     * A model cache is valid ONLY if it contains up-to-date embeddings for ALL provided items.
+     * @param {Array<{avatar:string, hash:string}>} items 
+     * @returns {Array<{modelName: string, map: Map<string, number[]>}>}
+     */
+    getValidCaches(items) {
+        if (!extension_settings[CACHE_KEY]) return [];
+
+        const validCaches = [];
+        const allModels = Object.keys(extension_settings[CACHE_KEY]);
+
+        for (const modelName of allModels) {
+            const cache = extension_settings[CACHE_KEY][modelName];
+            const map = new Map();
+            let isValid = true;
+
+            for (const item of items) {
+                const entry = cache[item.avatar];
+                
+                // If entry missing, or hash mismatch (text changed), this model is incomplete
+                if (!entry || entry.hash !== item.hash || !entry.vector) {
+                    isValid = false;
+                    break; 
+                }
+                map.set(item.avatar, entry.vector);
+            }
+
+            if (isValid) {
+                validCaches.push({ modelName, map });
+            }
         }
 
-        return finalMap;
+        return validCaches;
     }
 
     clearCache() {
@@ -817,9 +839,10 @@ class CharacterSimilarityExtension {
         this.settings = Object.assign({}, DEFAULT_SETTINGS, extension_settings[EXTENSION_NAME] || {});
         extension_settings[EXTENSION_NAME] = this.settings;
 
-        this.embeddings = new Map();
+        this.dataItems = []; // { avatar, text, hash }
+        this.validCaches = []; // Array of { modelName, map }
         this.uniquenessData = [];
-        this.isEmbedding = false;
+        this.isProcessing = false;
         
         this.service = new SimilarityService(this.settings);
         this.ui = new UIManager(this);
@@ -835,7 +858,6 @@ class CharacterSimilarityExtension {
     }
 
     populateLists() {
-        // Populate Uniqueness List (Uses cached data or simple list if no scores)
         if (this.uniquenessData.length === 0) {
             const simpleList = characters.map(c => ({ 
                 avatar: c.avatar, 
@@ -846,8 +868,6 @@ class CharacterSimilarityExtension {
         } else {
             this.ui.renderUniquenessList(this.uniquenessData, $('#charSimBtn_sort').hasClass('fa-arrow-down'));
         }
-
-        // Populate Character Grid
         this.ui.renderCharacterGrid(characters);
     }
 
@@ -855,31 +875,46 @@ class CharacterSimilarityExtension {
         $('#characterSimilarityPanel').addClass('open');
         this.populateLists();
         
-        // Auto Load & Calculate
-        await this.loadEmbeddings();
-        this.runUniqueness();
+        // Start full analysis workflow
+        if (!this.isProcessing) {
+            await this.refreshAnalysis();
+        }
     }
 
-    async loadEmbeddings() {
-        if (this.isEmbedding) return;
-        this.isEmbedding = true;
-        
+    async refreshAnalysis() {
+        this.isProcessing = true;
         try {
-            const texts = characters
-                .map(char => {
-                    const text = FIELDS_TO_EMBED.map(f => char[f] || '').join('\n').trim();
-                    return text ? { avatar: char.avatar, text } : null;
-                })
-                .filter(item => item !== null);
+            // 1. Prepare Data & Hashes
+            const texts = [];
+            for(const char of characters) {
+                const text = FIELDS_TO_EMBED.map(f => char[f] || '').join('\n').trim();
+                if(text) {
+                    const hash = await hashText(text);
+                    texts.push({ avatar: char.avatar, text, hash });
+                }
+            }
+            this.dataItems = texts;
 
-            if (texts.length === 0) throw new Error("No characters found with text content.");
+            if (this.dataItems.length === 0) throw new Error("No valid characters found.");
 
-            this.embeddings = await this.service.fetchEmbeddings(texts);
+            // 2. Update Live Cache (Fetch missing)
+            await this.service.updateLiveCache(this.dataItems);
+
+            // 3. Collect ALL valid caches (Multi-Model)
+            this.validCaches = this.service.getValidCaches(this.dataItems);
+
+            if(this.validCaches.length === 0) {
+                throw new Error("No valid embedding caches available.");
+            }
+            
+            // 4. Run Calculation
+            this.runUniqueness();
+
         } catch (err) {
-            toastr.error(err.message, "Embedding Error");
+            toastr.error(err.message, "Analysis Error");
             console.error(err);
         } finally {
-            this.isEmbedding = false;
+            this.isProcessing = false;
         }
     }
 
@@ -888,51 +923,79 @@ class CharacterSimilarityExtension {
     }
 
     runUniqueness() {
-        if (this.embeddings.size === 0 || this.isEmbedding) return;
+        if (this.validCaches.length === 0) return;
         
-        // Give UI a moment to show "Processing" state if needed, though mostly fast enough
         setTimeout(() => {
             try {
                 const method = this.settings.uniquenessMethod;
                 const n = this.settings.uniquenessN || 20;
-                let results = [];
-
-                switch (method) {
-                    case 'loda':
-                        results = ComputeEngine.computeLODAEnsemble(this.embeddings);
-                        break;
-                    case 'lunar':
-                        results = ComputeEngine.computeLUNAR(this.embeddings, n);
-                        break;
-                    case 'hbos':
-                        results = ComputeEngine.computeHBOS(this.embeddings);
-                        break;
-                    case 'ecod':
-                        results = ComputeEngine.computeECOD(this.embeddings);
-                        break;
-                    case 'isolation':
-                        results = ComputeEngine.computeIsolationForest(this.embeddings, n);
-                        break;
-                    case 'lof':
-                        results = ComputeEngine.computeLOF(this.embeddings, n);
-                        break;
-                    case 'knn':
-                        results = ComputeEngine.computeKNNUniqueness(this.embeddings, n);
-                        break;
-                    case 'mean':
-                    default:
-                        results = ComputeEngine.computeGlobalMeanUniqueness(this.embeddings);
-                        break;
-                }
                 
-                // Map names back
-                this.uniquenessData = results.map(r => {
-                    const char = characters.find(c => c.avatar === r.avatar);
-                    return char ? { ...r, name: char.name } : null;
-                }).filter(r => r);
+                // Composite Score Accumulator
+                const compositeScores = new Map(); // avatar -> totalScore
+                
+                // Run algorithm on EACH model cache independently
+                for(const cacheObj of this.validCaches) {
+                    const embeddingMap = cacheObj.map;
+                    let rawResults = [];
 
+                    switch (method) {
+                        case 'loda':
+                            rawResults = ComputeEngine.computeLODAEnsemble(embeddingMap);
+                            break;
+                        case 'lunar':
+                            rawResults = ComputeEngine.computeLUNAR(embeddingMap, n);
+                            break;
+                        case 'hbos':
+                            rawResults = ComputeEngine.computeHBOS(embeddingMap);
+                            break;
+                        case 'ecod':
+                            rawResults = ComputeEngine.computeECOD(embeddingMap);
+                            break;
+                        case 'isolation':
+                            rawResults = ComputeEngine.computeIsolationForest(embeddingMap, n);
+                            break;
+                        case 'lof':
+                            rawResults = ComputeEngine.computeLOF(embeddingMap, n);
+                            break;
+                        case 'knn':
+                            rawResults = ComputeEngine.computeKNNUniqueness(embeddingMap, n);
+                            break;
+                        case 'mean':
+                        default:
+                            rawResults = ComputeEngine.computeGlobalMeanUniqueness(embeddingMap);
+                            break;
+                    }
+
+                    // Normalize this model's results (0-1)
+                    const normalized = ComputeEngine.normalizeScores(rawResults);
+                    
+                    // Accumulate
+                    for(const item of normalized) {
+                        const prev = compositeScores.get(item.avatar) || 0;
+                        compositeScores.set(item.avatar, prev + item.distance);
+                    }
+                }
+
+                // Average the scores
+                const finalResults = [];
+                const modelCount = this.validCaches.length;
+                
+                for(const [avatar, total] of compositeScores.entries()) {
+                    const char = characters.find(c => c.avatar === avatar);
+                    if(char) {
+                        finalResults.push({
+                            avatar,
+                            name: char.name,
+                            distance: total / modelCount
+                        });
+                    }
+                }
+
+                this.uniquenessData = finalResults;
                 this.ui.renderUniquenessList(this.uniquenessData, $('#charSimBtn_sort').hasClass('fa-arrow-down'));
-                toastr.success(`Calculated: ${method.toUpperCase()}`);
+                
+                toastr.success(`Calculated using ${modelCount} model(s).`);
+
             } catch (e) {
                 toastr.error("Error calculating uniqueness: " + e.message);
                 console.error(e);
