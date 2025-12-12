@@ -224,27 +224,21 @@ class SimpleDecisionTree {
         let bestSplit = null;
         let bestError = Infinity;
 
-        // Leaf condition
         if (depth >= this.maxDepth || numSamples <= 2) {
             const mean = y.reduce((a, b) => a + b, 0) / numSamples;
             return { isLeaf: true, value: mean };
         }
 
-        // Stochastic feature selection for speed (sqrt of features)
         const nFeats = Math.floor(Math.sqrt(numFeatures));
         const featureIndices = [];
         for(let i=0; i<numFeatures; i++) featureIndices.push(i);
-        // Shuffle
         for (let i = featureIndices.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
             [featureIndices[i], featureIndices[j]] = [featureIndices[j], featureIndices[i]];
         }
         
-        // Find best split
         for (let i = 0; i < nFeats; i++) {
             const featureIdx = featureIndices[i];
-            // Sort by feature to find split points (simplified: just take random samples)
-            // For extreme speed in JS, pick 10 random rows as thresholds
             for (let k = 0; k < 10; k++) {
                 const randomRow = Math.floor(Math.random() * numSamples);
                 const threshold = X[randomRow][featureIdx];
@@ -258,7 +252,6 @@ class SimpleDecisionTree {
 
                 if (leftIndices.length === 0 || rightIndices.length === 0) continue;
 
-                // Calculate Variance Reduction (MSE)
                 const leftMean = leftIndices.reduce((sum, idx) => sum + y[idx], 0) / leftIndices.length;
                 const rightMean = rightIndices.reduce((sum, idx) => sum + y[idx], 0) / rightIndices.length;
                 
@@ -283,7 +276,6 @@ class SimpleDecisionTree {
             return { isLeaf: true, value: mean };
         }
 
-        // Recursion
         const leftX = bestSplit.leftIndices.map(i => X[i]);
         const leftY = bestSplit.leftIndices.map(i => y[i]);
         const rightX = bestSplit.rightIndices.map(i => X[i]);
@@ -315,7 +307,6 @@ class GradientBoostingRegressor {
     }
 
     fit(X, y) {
-        // Initial prediction (mean)
         const mean = y.reduce((a, b) => a + b, 0) / y.length;
         this.basePrediction = mean;
         let residuals = y.map(val => val - mean);
@@ -325,7 +316,6 @@ class GradientBoostingRegressor {
             tree.fit(X, residuals);
             this.trees.push(tree);
 
-            // Update residuals
             const predictions = X.map(row => tree.predict(row));
             residuals = residuals.map((r, idx) => r - (this.learningRate * predictions[idx]));
         }
@@ -425,7 +415,7 @@ class ComputeEngine {
         // 1. Separate Data
         for (const [avatar, vec] of embeddingMap.entries()) {
             if (ratingsMap.has(avatar)) {
-                trainX.push(Array.from(vec)); // JS Array needed for simplified logic
+                trainX.push(Array.from(vec)); 
                 trainY.push(ratingsMap.get(avatar));
             } else {
                 predictX.push(Array.from(vec));
@@ -433,7 +423,7 @@ class ComputeEngine {
             }
         }
 
-        if (trainX.length < 3 || predictX.length === 0) return new Map(); // Need minimum data
+        if (trainX.length < 3 || predictX.length === 0) return new Map();
 
         // 2. Train Gradient Boosting
         const gb = new GradientBoostingRegressor(30, 0.1, 3);
@@ -444,18 +434,15 @@ class ComputeEngine {
         const resultMap = new Map();
         
         predictions.forEach((val, idx) => {
-            // Clamp 0.5 to 5.0
+            // Clamp 0.5 to 5.0, but allow granularity (0.01 precision)
             let score = Math.max(0.5, Math.min(5.0, val));
-            // Round to nearest 0.5
-            score = Math.round(score * 2) / 2;
             resultMap.set(predictAvatars[idx], score);
         });
 
         return resultMap;
     }
 
-    // --- Uniqueness Algorithms (Existing) ---
-    // (Collapsed for brevity, logic remains same as previous steps using Cosine)
+    // --- Uniqueness Algorithms ---
     static computeGlobalMeanUniqueness(embeddingMap) {
         const vectors = Array.from(embeddingMap.values());
         const mean = this.calculateMeanVector(vectors);
@@ -1120,11 +1107,11 @@ class UIManager {
                     <h1>${char.name}</h1>
                     <div style="display:flex; align-items:center; gap: 10px;">
                         <div class="charSim-rating-container" data-avatar="${avatar}">
-                            <i class="fa-regular fa-star"></i>
-                            <i class="fa-regular fa-star"></i>
-                            <i class="fa-regular fa-star"></i>
-                            <i class="fa-regular fa-star"></i>
-                            <i class="fa-regular fa-star"></i>
+                            <i class="fa-solid fa-star"></i>
+                            <i class="fa-solid fa-star"></i>
+                            <i class="fa-solid fa-star"></i>
+                            <i class="fa-solid fa-star"></i>
+                            <i class="fa-solid fa-star"></i>
                         </div>
                         <div id="charSimRatingReset" class="menu_button fa-solid fa-rotate-left" title="Reset Rating" data-avatar="${avatar}" style="display:${showReset ? 'flex' : 'none'}; padding: 5px; width: 30px; height: 30px;"></div>
                     </div>
@@ -1188,25 +1175,36 @@ class UIManager {
 
     renderStars(container, value, isPredicted = false) {
         const stars = container.find('i');
-        
-        if (isPredicted) {
-            container.addClass('charSim-rating-predicted');
-        } else {
-            container.removeClass('charSim-rating-predicted');
-        }
+        const color = isPredicted ? '#89CFF0' : '#ffd700'; // Light Blue vs Gold
+        const emptyColor = '#e0e0e0';
 
         stars.each((index, el) => {
             const star = $(el);
-            star.removeClass('fa-solid fa-regular fa-star fa-star-half-stroke').addClass('fa-star'); // Reset to base
+            // Ensure base solid class is present (reset any specific gradient style)
+            star.removeAttr('style'); 
             
-            if (value >= index + 1) {
-                star.addClass('fa-solid'); // Full
-            } else if (value > index) {
-                star.addClass('fa-solid fa-star-half-stroke'); // Half
+            const diff = value - index;
+            
+            if (diff >= 1) {
+                // Full star
+                star.css('color', color);
+            } else if (diff > 0) {
+                // Partial star
+                const percent = diff * 100;
+                star.css({
+                    'background': `linear-gradient(90deg, ${color} ${percent}%, ${emptyColor} ${percent}%)`,
+                    '-webkit-background-clip': 'text',
+                    '-webkit-text-fill-color': 'transparent',
+                    'color': 'transparent' // Fallback/Ensures fill color takes precedence
+                });
             } else {
-                star.addClass('fa-regular'); // Empty
+                // Empty star
+                star.css('color', emptyColor);
             }
         });
+        
+        // Remove old class based styling if present, logic handled inline now for precision
+        container.toggleClass('charSim-rating-predicted', isPredicted);
     }
 
     loadNextSimilarBatch() {
