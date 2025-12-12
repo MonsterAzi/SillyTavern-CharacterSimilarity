@@ -68,7 +68,6 @@ class SimilarityService {
             
             if (response.ok) {
                 const data = await response.json();
-                // Per instructions: check what model name is in the return
                 if (data.model) return data.model;
             }
         } catch (e) {
@@ -88,18 +87,16 @@ class SimilarityService {
 
         // 1. Identify Model
         const modelName = await this.getModelName();
-        console.log(`[CharSim] Using Embedding Model: ${modelName}`);
+        // Console log removed to reduce spam, using Toastr for user feedback
 
         // 2. Load Cache
-        // Structure: settings[CACHE_KEY][modelName][avatar] = { hash: "...", vector: [...] }
         if (!extension_settings[CACHE_KEY]) extension_settings[CACHE_KEY] = {};
         if (!extension_settings[CACHE_KEY][modelName]) extension_settings[CACHE_KEY][modelName] = {};
         
         const currentCache = extension_settings[CACHE_KEY][modelName];
         const finalMap = new Map();
         const toRequest = [];
-        const toRequestIndices = []; // To map back result to items
-
+        
         // 3. Diffing (Check Cache)
         for (let i = 0; i < items.length; i++) {
             const item = items[i];
@@ -112,7 +109,6 @@ class SimilarityService {
             } else {
                 // Miss (New or Changed)
                 toRequest.push(item);
-                toRequestIndices.push(i);
                 // Temporarily store hash to save later
                 item._newHash = currentHash; 
             }
@@ -120,8 +116,7 @@ class SimilarityService {
 
         // 4. Batch Request (only if needed)
         if (toRequest.length > 0) {
-            console.log(`[CharSim] Embedding ${toRequest.length} new/changed items.`);
-            toastr.info(`Embedding ${toRequest.length} new items...`);
+            toastr.info(`Embedding ${toRequest.length} new or modified characters...`);
 
             const response = await fetch('/api/backends/kobold/embed', {
                 method: 'POST',
@@ -158,8 +153,7 @@ class SimilarityService {
             // Persist
             extension_settings[CACHE_KEY][modelName] = currentCache;
             saveSettingsDebounced();
-        } else {
-            console.log(`[CharSim] All items retrieved from cache for ${modelName}.`);
+            toastr.success(`Processed ${toRequest.length} new embeddings.`);
         }
 
         return finalMap;
@@ -667,8 +661,6 @@ class UIManager {
                 <div class="charSimPanel-body">
                     <div id="charSimView_uniqueness" class="charSim-view active">
                         <div class="charSim-controls">
-                            <div id="charSimBtn_load" class="menu_button">Load Embeddings</div>
-                            
                             <select id="charSimSelect_method" class="text_pole charSim-select">
                                 <option value="mean">Global Mean Distance</option>
                                 <option value="loda">LODA (Ensemble)</option>
@@ -684,8 +676,6 @@ class UIManager {
                                 <label for="charSimInput_n">N:</label>
                                 <input id="charSimInput_n" type="number" class="text_pole" min="1" value="20" />
                             </div>
-
-                            <div id="charSimBtn_calcUnique" class="menu_button">Calculate Uniqueness</div>
                             
                             <div class="charSim-spacer"></div>
                             <div id="charSimBtn_sort" class="menu_button menu_button_icon fa-solid fa-arrow-down" title="Toggle Sort"></div>
@@ -725,10 +715,7 @@ class UIManager {
 
     bindEvents() {
         // Global Open/Close
-        $('#charSimOpenBtn').on('click', () => {
-            $('#characterSimilarityPanel').addClass('open');
-            this.ext.populateLists();
-        });
+        $('#charSimOpenBtn').on('click', () => this.ext.onOpenPanel());
         $('#charSimCloseBtn').on('click', () => $('#characterSimilarityPanel').removeClass('open'));
 
         // Tabs
@@ -741,22 +728,22 @@ class UIManager {
         });
 
         // Actions
-        $('#charSimBtn_load').on('click', () => this.ext.loadEmbeddings());
-        $('#charSimBtn_calcUnique').on('click', () => this.ext.runUniqueness());
         $('#charSimBtn_sort').on('click', (e) => {
             $(e.currentTarget).toggleClass('fa-arrow-down fa-arrow-up');
             this.ext.toggleSort();
         });
 
-        // Dropdown & Params
+        // Dropdown & Params (Trigger Recalc)
         $('#charSimSelect_method').on('change', (e) => {
             const val = e.target.value;
             this.toggleParamInput(val);
             this.ext.updateSetting('uniquenessMethod', val);
+            this.ext.runUniqueness();
         });
 
         $('#charSimInput_n').on('change', (e) => {
             this.ext.updateSetting('uniquenessN', parseInt(e.target.value) || 20);
+            this.ext.runUniqueness();
         });
 
         // Filter Characters
@@ -783,7 +770,7 @@ class UIManager {
     renderUniquenessList(items, isDescending) {
         const container = $('#charSimList_uniqueness');
         if (!items || items.length === 0) {
-            container.html(this.createEmptyState("No data available. Load embeddings first."));
+            container.html(this.createEmptyState("Processing..."));
             return;
         }
 
@@ -820,12 +807,6 @@ class UIManager {
     createEmptyState(msg) {
         return `<div class="charSim-empty-state"><p>${msg}</p></div>`;
     }
-
-    setLoading(isLoading, msg = "Processing...") {
-        const buttons = $('#charSimBtn_load, #charSimBtn_calcUnique');
-        buttons.prop('disabled', isLoading);
-        if(isLoading) toastr.info(msg);
-    }
 }
 
 /**
@@ -838,6 +819,7 @@ class CharacterSimilarityExtension {
 
         this.embeddings = new Map();
         this.uniquenessData = [];
+        this.isEmbedding = false;
         
         this.service = new SimilarityService(this.settings);
         this.ui = new UIManager(this);
@@ -869,8 +851,19 @@ class CharacterSimilarityExtension {
         this.ui.renderCharacterGrid(characters);
     }
 
+    async onOpenPanel() {
+        $('#characterSimilarityPanel').addClass('open');
+        this.populateLists();
+        
+        // Auto Load & Calculate
+        await this.loadEmbeddings();
+        this.runUniqueness();
+    }
+
     async loadEmbeddings() {
-        this.ui.setLoading(true, "Preparing text data...");
+        if (this.isEmbedding) return;
+        this.isEmbedding = true;
+        
         try {
             const texts = characters
                 .map(char => {
@@ -882,13 +875,11 @@ class CharacterSimilarityExtension {
             if (texts.length === 0) throw new Error("No characters found with text content.");
 
             this.embeddings = await this.service.fetchEmbeddings(texts);
-            
-            toastr.success(`Loaded ${this.embeddings.size} embeddings.`);
         } catch (err) {
             toastr.error(err.message, "Embedding Error");
             console.error(err);
         } finally {
-            this.ui.setLoading(false);
+            this.isEmbedding = false;
         }
     }
 
@@ -897,11 +888,9 @@ class CharacterSimilarityExtension {
     }
 
     runUniqueness() {
-        if (this.embeddings.size === 0) return toastr.warning("Please load embeddings first.");
+        if (this.embeddings.size === 0 || this.isEmbedding) return;
         
-        this.ui.setLoading(true, "Calculating...");
-        
-        // Small timeout to allow UI to show loading toast
+        // Give UI a moment to show "Processing" state if needed, though mostly fast enough
         setTimeout(() => {
             try {
                 const method = this.settings.uniquenessMethod;
@@ -943,14 +932,12 @@ class CharacterSimilarityExtension {
                 }).filter(r => r);
 
                 this.ui.renderUniquenessList(this.uniquenessData, $('#charSimBtn_sort').hasClass('fa-arrow-down'));
-                toastr.success("Uniqueness calculated using " + method.toUpperCase());
+                toastr.success(`Calculated: ${method.toUpperCase()}`);
             } catch (e) {
                 toastr.error("Error calculating uniqueness: " + e.message);
                 console.error(e);
-            } finally {
-                this.ui.setLoading(false);
             }
-        }, 50);
+        }, 10);
     }
 
     toggleSort() {
