@@ -12,7 +12,7 @@ import {
 // --- Constants & Config ---
 const EXTENSION_NAME = "character_similarity";
 const CACHE_KEY = "character_similarity_cache";
-const RATINGS_KEY = "character_similarity_ratings"; // New key for ratings
+const RATINGS_KEY = "character_similarity_ratings";
 const DEFAULT_SETTINGS = {
     koboldUrl: 'http://127.0.0.1:5001',
     uniquenessMethod: 'mean',
@@ -87,6 +87,7 @@ class SimilarityService {
 
         // 1. Identify Model
         const modelName = await this.getModelName();
+        this.currentModelName = modelName; // Store for prediction usage
         
         // 2. Load Cache
         if (!extension_settings[CACHE_KEY]) extension_settings[CACHE_KEY] = {};
@@ -149,8 +150,6 @@ class SimilarityService {
     /**
      * Retrieves ALL valid model caches.
      * A model cache is valid ONLY if it contains up-to-date embeddings for ALL provided items.
-     * @param {Array<{avatar:string, hash:string}>} items 
-     * @returns {Array<{modelName: string, map: Map<string, number[]>}>}
      */
     getValidCaches(items) {
         if (!extension_settings[CACHE_KEY]) return [];
@@ -165,8 +164,6 @@ class SimilarityService {
 
             for (const item of items) {
                 const entry = cache[item.avatar];
-                
-                // If entry missing, or hash mismatch (text changed), this model is incomplete
                 if (!entry || entry.hash !== item.hash || !entry.vector) {
                     isValid = false;
                     break; 
@@ -182,10 +179,166 @@ class SimilarityService {
         return validCaches;
     }
 
+    /**
+     * Helper to get embeddings for the current live model (used for training)
+     */
+    getLiveEmbeddings() {
+        if (!this.currentModelName || !extension_settings[CACHE_KEY] || !extension_settings[CACHE_KEY][this.currentModelName]) {
+            return new Map();
+        }
+        const cache = extension_settings[CACHE_KEY][this.currentModelName];
+        const map = new Map();
+        for(const key in cache) {
+            if(cache[key].vector) map.set(key, cache[key].vector);
+        }
+        return map;
+    }
+
     clearCache() {
         extension_settings[CACHE_KEY] = {};
         saveSettingsDebounced();
         toastr.success("Embedding cache cleared.");
+    }
+}
+
+/**
+ * Lightweight Gradient Boosting Regressor (Vanilla JS)
+ */
+class SimpleDecisionTree {
+    constructor(maxDepth = 3) {
+        this.maxDepth = maxDepth;
+        this.tree = null;
+    }
+
+    fit(X, y) {
+        this.tree = this._buildTree(X, y, 0);
+    }
+
+    predict(x) {
+        return this._predictNode(this.tree, x);
+    }
+
+    _buildTree(X, y, depth) {
+        const numSamples = X.length;
+        const numFeatures = X[0].length;
+        let bestSplit = null;
+        let bestError = Infinity;
+
+        // Leaf condition
+        if (depth >= this.maxDepth || numSamples <= 2) {
+            const mean = y.reduce((a, b) => a + b, 0) / numSamples;
+            return { isLeaf: true, value: mean };
+        }
+
+        // Stochastic feature selection for speed (sqrt of features)
+        const nFeats = Math.floor(Math.sqrt(numFeatures));
+        const featureIndices = [];
+        for(let i=0; i<numFeatures; i++) featureIndices.push(i);
+        // Shuffle
+        for (let i = featureIndices.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [featureIndices[i], featureIndices[j]] = [featureIndices[j], featureIndices[i]];
+        }
+        
+        // Find best split
+        for (let i = 0; i < nFeats; i++) {
+            const featureIdx = featureIndices[i];
+            // Sort by feature to find split points (simplified: just take random samples)
+            // For extreme speed in JS, pick 10 random rows as thresholds
+            for (let k = 0; k < 10; k++) {
+                const randomRow = Math.floor(Math.random() * numSamples);
+                const threshold = X[randomRow][featureIdx];
+
+                const leftIndices = [];
+                const rightIndices = [];
+                for(let r=0; r<numSamples; r++) {
+                    if(X[r][featureIdx] < threshold) leftIndices.push(r);
+                    else rightIndices.push(r);
+                }
+
+                if (leftIndices.length === 0 || rightIndices.length === 0) continue;
+
+                // Calculate Variance Reduction (MSE)
+                const leftMean = leftIndices.reduce((sum, idx) => sum + y[idx], 0) / leftIndices.length;
+                const rightMean = rightIndices.reduce((sum, idx) => sum + y[idx], 0) / rightIndices.length;
+                
+                let error = 0;
+                for(const idx of leftIndices) error += (y[idx] - leftMean) ** 2;
+                for(const idx of rightIndices) error += (y[idx] - rightMean) ** 2;
+
+                if (error < bestError) {
+                    bestError = error;
+                    bestSplit = {
+                        featureIdx,
+                        threshold,
+                        leftIndices,
+                        rightIndices
+                    };
+                }
+            }
+        }
+
+        if (!bestSplit) {
+            const mean = y.reduce((a, b) => a + b, 0) / numSamples;
+            return { isLeaf: true, value: mean };
+        }
+
+        // Recursion
+        const leftX = bestSplit.leftIndices.map(i => X[i]);
+        const leftY = bestSplit.leftIndices.map(i => y[i]);
+        const rightX = bestSplit.rightIndices.map(i => X[i]);
+        const rightY = bestSplit.rightIndices.map(i => y[i]);
+
+        return {
+            isLeaf: false,
+            featureIdx: bestSplit.featureIdx,
+            threshold: bestSplit.threshold,
+            left: this._buildTree(leftX, leftY, depth + 1),
+            right: this._buildTree(rightX, rightY, depth + 1)
+        };
+    }
+
+    _predictNode(node, x) {
+        if (node.isLeaf) return node.value;
+        if (x[node.featureIdx] < node.threshold) return this._predictNode(node.left, x);
+        return this._predictNode(node.right, x);
+    }
+}
+
+class GradientBoostingRegressor {
+    constructor(nEstimators = 20, learningRate = 0.1, maxDepth = 3) {
+        this.nEstimators = nEstimators;
+        this.learningRate = learningRate;
+        this.maxDepth = maxDepth;
+        this.trees = [];
+        this.basePrediction = 0;
+    }
+
+    fit(X, y) {
+        // Initial prediction (mean)
+        const mean = y.reduce((a, b) => a + b, 0) / y.length;
+        this.basePrediction = mean;
+        let residuals = y.map(val => val - mean);
+
+        for (let i = 0; i < this.nEstimators; i++) {
+            const tree = new SimpleDecisionTree(this.maxDepth);
+            tree.fit(X, residuals);
+            this.trees.push(tree);
+
+            // Update residuals
+            const predictions = X.map(row => tree.predict(row));
+            residuals = residuals.map((r, idx) => r - (this.learningRate * predictions[idx]));
+        }
+    }
+
+    predict(X) {
+        return X.map(row => {
+            let pred = this.basePrediction;
+            for (const tree of this.trees) {
+                pred += this.learningRate * tree.predict(row);
+            }
+            return pred;
+        });
     }
 }
 
@@ -234,7 +387,6 @@ class ComputeEngine {
     }
 
     static calculateCosineDistance(vecA, vecB) {
-        // Distance = 1 - Similarity
         return 1 - this.calculateCosineSimilarity(vecA, vecB);
     }
 
@@ -262,70 +414,96 @@ class ComputeEngine {
         }));
     }
 
-    // --- Algorithms ---
+    // --- Prediction ---
 
+    static computePredictedRatings(embeddingMap, ratingsMap) {
+        const trainX = [];
+        const trainY = [];
+        const predictX = [];
+        const predictAvatars = [];
+
+        // 1. Separate Data
+        for (const [avatar, vec] of embeddingMap.entries()) {
+            if (ratingsMap.has(avatar)) {
+                trainX.push(Array.from(vec)); // JS Array needed for simplified logic
+                trainY.push(ratingsMap.get(avatar));
+            } else {
+                predictX.push(Array.from(vec));
+                predictAvatars.push(avatar);
+            }
+        }
+
+        if (trainX.length < 3 || predictX.length === 0) return new Map(); // Need minimum data
+
+        // 2. Train Gradient Boosting
+        const gb = new GradientBoostingRegressor(30, 0.1, 3);
+        gb.fit(trainX, trainY);
+
+        // 3. Predict
+        const predictions = gb.predict(predictX);
+        const resultMap = new Map();
+        
+        predictions.forEach((val, idx) => {
+            // Clamp 0.5 to 5.0
+            let score = Math.max(0.5, Math.min(5.0, val));
+            // Round to nearest 0.5
+            score = Math.round(score * 2) / 2;
+            resultMap.set(predictAvatars[idx], score);
+        });
+
+        return resultMap;
+    }
+
+    // --- Uniqueness Algorithms (Existing) ---
+    // (Collapsed for brevity, logic remains same as previous steps using Cosine)
     static computeGlobalMeanUniqueness(embeddingMap) {
         const vectors = Array.from(embeddingMap.values());
         const mean = this.calculateMeanVector(vectors);
         if (!mean) return [];
-
         const results = [];
         for (const [avatar, vec] of embeddingMap.entries()) {
-            // Using Cosine Distance for uniqueness calculation
             const distance = this.calculateCosineDistance(vec, mean);
             results.push({ avatar, distance });
         }
         return results;
     }
-
     static computeKNNUniqueness(embeddingMap, k) {
         const entries = Array.from(embeddingMap.entries());
         const n = entries.length;
         const neighborCount = Math.max(1, Math.min(k, n - 1));
         const results = [];
-
         for (let i = 0; i < n; i++) {
             const [currentAvatar, currentVec] = entries[i];
             const distances = [];
-
             for (let j = 0; j < n; j++) {
                 if (i === j) continue;
-                // Cosine Distance
                 const d = this.calculateCosineDistance(currentVec, entries[j][1]);
                 distances.push(d);
             }
-
             distances.sort((a, b) => a - b);
             const kNearest = distances.slice(0, neighborCount);
             const avgDist = kNearest.reduce((acc, val) => acc + val, 0) / neighborCount;
             results.push({ avatar: currentAvatar, distance: avgDist });
         }
-
         return results;
     }
-
     static computeLOF(embeddingMap, k) {
         const entries = Array.from(embeddingMap.entries());
         const n = entries.length;
         const neighborCount = Math.max(1, Math.min(k, n - 1));
-
         const neighborhoodInfo = new Array(n);
-
         for (let i = 0; i < n; i++) {
             const vecA = entries[i][1];
             const dists = [];
             for (let j = 0; j < n; j++) {
                 if (i === j) continue;
-                // Cosine Distance
                 dists.push({ idx: j, dist: this.calculateCosineDistance(vecA, entries[j][1]) });
             }
             dists.sort((a, b) => a.dist - b.dist);
-            
             const neighbors = dists.slice(0, neighborCount);
             const kDistance = neighbors[neighborCount - 1].dist;
             neighborhoodInfo[i] = { neighbors, kDistance };
         }
-
         const lrd = new Float32Array(n);
         for (let i = 0; i < n; i++) {
             const { neighbors } = neighborhoodInfo[i];
@@ -340,7 +518,6 @@ class ComputeEngine {
             const avgReachDist = sumReachDist / neighborCount;
             lrd[i] = avgReachDist > 0 ? (1 / avgReachDist) : 0;
         }
-
         const results = [];
         for (let i = 0; i < n; i++) {
             const { neighbors } = neighborhoodInfo[i];
@@ -357,7 +534,6 @@ class ComputeEngine {
         }
         return results;
     }
-
     static computeIsolationForest(embeddingMap, nTrees = 100) {
         const entries = Array.from(embeddingMap.entries());
         const data = entries.map(e => e[1]);
@@ -365,14 +541,12 @@ class ComputeEngine {
         const dim = data[0].length;
         const subsampleSize = Math.min(256, n);
         const heightLimit = Math.ceil(Math.log2(subsampleSize));
-
         const c = (size) => {
             if (size <= 1) return 0;
             return 2 * (Math.log(size - 1) + 0.5772156649) - (2 * (size - 1) / size);
         };
         const avgPathLengthNormalization = c(subsampleSize);
         const pathLengths = new Float32Array(n).fill(0);
-
         for (let t = 0; t < nTrees; t++) {
             const indices = [];
             for(let i=0; i<n; i++) indices.push(i);
@@ -380,7 +554,6 @@ class ComputeEngine {
                 const j = Math.floor(Math.random() * (i + 1));
                 [indices[i], indices[j]] = [indices[j], indices[i]];
             }
-            
             const buildAndEvaluate = (currentIndices, currentDepth) => {
                 if (currentDepth >= heightLimit || currentIndices.length <= 1) {
                     return;
@@ -406,7 +579,6 @@ class ComputeEngine {
             };
             buildAndEvaluate(indices, 0);
         }
-
         const results = [];
         for (let i = 0; i < n; i++) {
             const avgPathLen = pathLengths[i] / nTrees;
@@ -415,24 +587,19 @@ class ComputeEngine {
         }
         return results;
     }
-
     static computeECOD(embeddingMap) {
         const entries = Array.from(embeddingMap.entries());
         const data = entries.map(e => e[1]);
         const n = data.length;
         if (n === 0) return [];
         const dim = data[0].length;
-        
         const scores = new Float32Array(n).fill(0);
-
         for (let d = 0; d < dim; d++) {
             const column = new Float32Array(n);
             for(let i=0; i<n; i++) column[i] = data[i][d];
-            
             const indices = new Int32Array(n);
             for(let i=0; i<n; i++) indices[i] = i;
             indices.sort((a, b) => column[a] - column[b]);
-            
             for(let r=0; r<n; r++) {
                 const originalIndex = indices[r];
                 const pLeft = (r + 1) / (n + 1);
@@ -442,14 +609,12 @@ class ComputeEngine {
                 scores[originalIndex] += Math.max(sLeft, sRight);
             }
         }
-        
         const results = [];
         for (let i = 0; i < n; i++) {
             results.push({ avatar: entries[i][0], distance: scores[i] });
         }
         return results;
     }
-
     static computeHBOS(embeddingMap) {
         const entries = Array.from(embeddingMap.entries());
         const data = entries.map(e => e[1]);
@@ -457,12 +622,10 @@ class ComputeEngine {
         if (n === 0) return [];
         const dim = data[0].length;
         const scores = new Float32Array(n).fill(0);
-
         for (let d = 0; d < dim; d++) {
             let min = Infinity, max = -Infinity;
             const col = new Float32Array(n);
             let sum = 0;
-
             for(let i=0; i<n; i++) {
                 const val = data[i][d];
                 col[i] = val;
@@ -470,12 +633,10 @@ class ComputeEngine {
                 if(val < min) min = val;
                 if(val > max) max = val;
             }
-
             const mean = sum / n;
             let sqDiff = 0;
             for(let x of col) sqDiff += (x - mean) * (x - mean);
             const std = Math.sqrt(sqDiff / n);
-
             let binCount = 10; 
             if (std > 0) {
                 const binWidth = (3.5 * std) / Math.pow(n, 1/3);
@@ -484,11 +645,9 @@ class ComputeEngine {
                 }
             }
             binCount = Math.max(5, Math.min(binCount, Math.floor(n), 50));
-            
             const hist = new Int32Array(binCount).fill(0);
             const range = max - min;
             const step = range / binCount;
-            
             if (step > 0) {
                 for(let i=0; i<n; i++) {
                     let binIdx = Math.floor((col[i] - min) / step);
@@ -498,7 +657,6 @@ class ComputeEngine {
             } else {
                 hist[0] = n;
             }
-
             for(let i=0; i<n; i++) {
                 let binIdx = 0;
                 if (step > 0) {
@@ -513,26 +671,21 @@ class ComputeEngine {
                 }
             }
         }
-        
         const results = [];
         for (let i = 0; i < n; i++) {
             results.push({ avatar: entries[i][0], distance: scores[i] });
         }
         return results;
     }
-
     static computeLUNAR(embeddingMap, k) {
         const entries = Array.from(embeddingMap.entries());
         const realData = entries.map(e => e[1]);
         const n = realData.length;
         if (n < 2) return [];
-
         const dim = realData[0].length;
         const neighborCount = Math.max(1, Math.min(k, n - 1));
-
         const negativeData = [];
         const noiseScale = 0.1;
-
         for(let i=0; i<n; i++) {
             const noise = new Float32Array(dim);
             for(let d=0; d<dim; d++) {
@@ -541,7 +694,6 @@ class ComputeEngine {
             }
             negativeData.push(noise);
         }
-
         const getKNN = (queryPoint, isRealIndex) => {
             const dists = [];
             for(let i=0; i<n; i++) {
@@ -551,22 +703,17 @@ class ComputeEngine {
             dists.sort((a,b) => a - b);
             return dists.slice(0, neighborCount);
         };
-
         const X_real = [];
         for(let i=0; i<n; i++) X_real.push(getKNN(realData[i], i));
-
         const X_neg = [];
         for(let i=0; i<n; i++) X_neg.push(getKNN(negativeData[i], -1));
-
         const hiddenSize = 16;
         const learningRate = 0.1;
         const epochs = 50;
-
         const W1 = new Float32Array(neighborCount * hiddenSize).map(() => Math.random() * 0.2 - 0.1);
         const b1 = new Float32Array(hiddenSize).fill(0);
         const W2 = new Float32Array(hiddenSize).map(() => Math.random() * 0.2 - 0.1);
         let b2 = 0;
-
         const forward = (input) => {
             const h = new Float32Array(hiddenSize);
             for(let i=0; i<hiddenSize; i++) {
@@ -583,27 +730,22 @@ class ComputeEngine {
             const pred = 1 / (1 + Math.exp(-z));
             return { h, pred };
         };
-
         for(let epoch=0; epoch<epochs; epoch++) {
             const indices = [];
             for(let i=0; i<n*2; i++) indices.push(i);
             indices.sort(() => Math.random() - 0.5);
-
             for(const idx of indices) {
                 const isReal = idx < n;
                 const features = isReal ? X_real[idx] : X_neg[idx - n];
                 const target = isReal ? 0 : 1;
-
                 const { h, pred } = forward(features);
                 const error = pred - target;
                 const gradOut = error * (pred * (1 - pred));
-
                 for(let i=0; i<hiddenSize; i++) {
                     const grad = gradOut * h[i];
                     W2[i] -= learningRate * grad;
                 }
                 b2 -= learningRate * gradOut;
-
                 for(let i=0; i<hiddenSize; i++) {
                     const gradH = gradOut * W2[i];
                     const gradReLU = h[i] > 0 ? 1 : 0;
@@ -615,7 +757,6 @@ class ComputeEngine {
                 }
             }
         }
-
         const results = [];
         for(let i=0; i<n; i++) {
             const { pred } = forward(X_real[i]);
@@ -623,48 +764,35 @@ class ComputeEngine {
         }
         return results;
     }
-
     static computeLODAEnsemble(embeddingMap) {
         const n = embeddingMap.size;
         if (n < 2) return [];
-
         const n_sqrt = Math.sqrt(n);
         const k_025 = Math.max(1, Math.round(Math.pow(n, 0.25)));
         const k_050 = Math.max(1, Math.round(n_sqrt));
         const k_075 = Math.max(1, Math.round(Math.pow(n, 0.75)));
-        
         const rawResults = [];
-        
         rawResults.push(this.normalizeScores(this.computeKNNUniqueness(embeddingMap, k_025)));
         rawResults.push(this.normalizeScores(this.computeKNNUniqueness(embeddingMap, k_050)));
         rawResults.push(this.normalizeScores(this.computeKNNUniqueness(embeddingMap, k_075)));
-        
         rawResults.push(this.normalizeScores(this.computeLOF(embeddingMap, 10)));
         rawResults.push(this.normalizeScores(this.computeLOF(embeddingMap, 30)));
-        
         rawResults.push(this.normalizeScores(this.computeIsolationForest(embeddingMap, 100)));
-        
         rawResults.push(this.normalizeScores(this.computeHBOS(embeddingMap)));
-        
         rawResults.push(this.normalizeScores(this.computeECOD(embeddingMap)));
-        
         rawResults.push(this.normalizeScores(this.computeLUNAR(embeddingMap, k_050)));
-
         const aggregated = new Map();
-        
         for (const resultSet of rawResults) {
             for (const item of resultSet) {
                 const prev = aggregated.get(item.avatar) || 0;
                 aggregated.set(item.avatar, prev + item.distance);
             }
         }
-
         const finalResults = [];
         const count = rawResults.length;
         for (const [avatar, totalScore] of aggregated.entries()) {
             finalResults.push({ avatar, distance: totalScore / count });
         }
-
         return finalResults;
     }
 }
@@ -850,8 +978,6 @@ class UIManager {
         $('#characterSimilarityPanel').on('mousemove', '.charSim-rating-container', (e) => {
             const container = $(e.currentTarget);
             const width = container.width() / 5;
-            // FIX: Use pageX and offset to get X relative to container, 
-            // because offsetX is relative to target (which might be the star icon)
             const offset = container.offset();
             const x = e.pageX - offset.left;
             
@@ -866,14 +992,18 @@ class UIManager {
         $('#characterSimilarityPanel').on('mouseleave', '.charSim-rating-container', (e) => {
             const container = $(e.currentTarget);
             const avatar = container.data('avatar');
-            const savedValue = this.ext.getRating(avatar);
-            this.renderStars(container, savedValue);
+            // Check for manual, then predicted
+            let value = this.ext.getRating(avatar);
+            if (value === 0 && this.ext.predictedRatings.has(avatar)) {
+                value = this.ext.predictedRatings.get(avatar);
+            }
+            const isPredicted = this.ext.getRating(avatar) === 0 && this.ext.predictedRatings.has(avatar);
+            this.renderStars(container, value, isPredicted);
         });
 
         $('#characterSimilarityPanel').on('click', '.charSim-rating-container', (e) => {
             const container = $(e.currentTarget);
             const width = container.width() / 5;
-            // FIX: Use pageX and offset
             const offset = container.offset();
             const x = e.pageX - offset.left;
 
@@ -885,7 +1015,27 @@ class UIManager {
             
             const avatar = container.data('avatar');
             this.ext.setRating(avatar, value);
-            this.renderStars(container, value);
+            this.renderStars(container, value, false); // Becomes manual
+            
+            // Show reset button
+            $('#charSimRatingReset').show();
+        });
+
+        // Reset Rating
+        $('#characterSimilarityPanel').on('click', '#charSimRatingReset', (e) => {
+            const avatar = $(e.currentTarget).data('avatar');
+            this.ext.setRating(avatar, null); // Clear manual rating
+            
+            // Re-render based on potential prediction
+            let value = 0;
+            let isPredicted = false;
+            if (this.ext.predictedRatings.has(avatar)) {
+                value = this.ext.predictedRatings.get(avatar);
+                isPredicted = true;
+            }
+            
+            this.renderStars($('.charSim-rating-container'), value, isPredicted);
+            $(e.currentTarget).hide();
         });
     }
 
@@ -949,7 +1099,15 @@ class UIManager {
         const firstMes = char.first_mes || "";
         const mesEx = char.mes_example || "";
         
-        const currentRating = this.ext.getRating(avatar);
+        let currentRating = this.ext.getRating(avatar);
+        let isPredicted = false;
+        let showReset = currentRating !== 0;
+
+        // If no manual rating, check for prediction
+        if (currentRating === 0 && this.ext.predictedRatings.has(avatar)) {
+            currentRating = this.ext.predictedRatings.get(avatar);
+            isPredicted = true;
+        }
 
         // Reset similar list state
         this.currentSimilarList = this.ext.getSimilarCharacters(avatar);
@@ -960,12 +1118,15 @@ class UIManager {
                 <img src="${getThumbnailUrl('avatar', avatar)}" class="charSim-details-img">
                 <div class="charSim-details-info">
                     <h1>${char.name}</h1>
-                    <div class="charSim-rating-container" data-avatar="${avatar}">
-                        <i class="fa-regular fa-star"></i>
-                        <i class="fa-regular fa-star"></i>
-                        <i class="fa-regular fa-star"></i>
-                        <i class="fa-regular fa-star"></i>
-                        <i class="fa-regular fa-star"></i>
+                    <div style="display:flex; align-items:center; gap: 10px;">
+                        <div class="charSim-rating-container" data-avatar="${avatar}">
+                            <i class="fa-regular fa-star"></i>
+                            <i class="fa-regular fa-star"></i>
+                            <i class="fa-regular fa-star"></i>
+                            <i class="fa-regular fa-star"></i>
+                            <i class="fa-regular fa-star"></i>
+                        </div>
+                        <div id="charSimRatingReset" class="menu_button fa-solid fa-rotate-left" title="Reset Rating" data-avatar="${avatar}" style="display:${showReset ? 'flex' : 'none'}; padding: 5px; width: 30px; height: 30px;"></div>
                     </div>
                     <div class="charSim-creator-notes">${creatorNotes}</div>
                 </div>
@@ -1007,7 +1168,7 @@ class UIManager {
         container.html(html);
         
         // Initial star render
-        this.renderStars($('.charSim-rating-container'), currentRating);
+        this.renderStars($('.charSim-rating-container'), currentRating, isPredicted);
 
         // Initial load of similar items
         this.loadNextSimilarBatch();
@@ -1025,8 +1186,15 @@ class UIManager {
         $('#charSimView_details').addClass('active');
     }
 
-    renderStars(container, value) {
+    renderStars(container, value, isPredicted = false) {
         const stars = container.find('i');
+        
+        if (isPredicted) {
+            container.addClass('charSim-rating-predicted');
+        } else {
+            container.removeClass('charSim-rating-predicted');
+        }
+
         stars.each((index, el) => {
             const star = $(el);
             star.removeClass('fa-solid fa-regular fa-star fa-star-half-stroke').addClass('fa-star'); // Reset to base
@@ -1087,6 +1255,7 @@ class CharacterSimilarityExtension {
         this.dataItems = []; 
         this.validCaches = []; 
         this.uniquenessData = [];
+        this.predictedRatings = new Map(); // Store predicted ratings here
         this.isProcessing = false;
         
         this.service = new SimilarityService(this.settings);
@@ -1109,8 +1278,13 @@ class CharacterSimilarityExtension {
 
     setRating(avatar, value) {
         if (!extension_settings[RATINGS_KEY]) extension_settings[RATINGS_KEY] = {};
-        extension_settings[RATINGS_KEY][avatar] = value;
+        if (value === null) {
+            delete extension_settings[RATINGS_KEY][avatar];
+        } else {
+            extension_settings[RATINGS_KEY][avatar] = value;
+        }
         saveSettingsDebounced();
+        this.updatePredictions(); // Retrain on change
     }
 
     populateLists() {
@@ -1160,6 +1334,7 @@ class CharacterSimilarityExtension {
             }
             
             this.runUniqueness();
+            this.updatePredictions();
 
         } catch (err) {
             toastr.error(err.message, "Analysis Error");
@@ -1249,14 +1424,26 @@ class CharacterSimilarityExtension {
         }, 10);
     }
 
-    /**
-     * Finds characters similar to target using Multi-Model Caching
-     * Uses Cosine Similarity (Higher is better)
-     */
+    updatePredictions() {
+        setTimeout(() => {
+            const embeddingMap = this.service.getLiveEmbeddings();
+            if(embeddingMap.size === 0) return;
+
+            const ratingsMap = new Map();
+            if(extension_settings[RATINGS_KEY]) {
+                for(const key in extension_settings[RATINGS_KEY]) {
+                    ratingsMap.set(key, extension_settings[RATINGS_KEY][key]);
+                }
+            }
+
+            this.predictedRatings = ComputeEngine.computePredictedRatings(embeddingMap, ratingsMap);
+        }, 50);
+    }
+
     getSimilarCharacters(targetAvatar) {
         if (this.validCaches.length === 0) return [];
         
-        const compositeSimilarities = new Map(); // avatar -> totalSimilarity
+        const compositeSimilarities = new Map();
 
         for (const cacheObj of this.validCaches) {
             const map = cacheObj.map;
@@ -1267,19 +1454,16 @@ class CharacterSimilarityExtension {
 
             for (const [avatar, vec] of map.entries()) {
                 if (avatar === targetAvatar) continue;
-                // Calculate Raw Cosine Similarity (0.0 to 1.0)
                 const sim = ComputeEngine.calculateCosineSimilarity(targetVec, vec);
                 currentSimilarities.push({ avatar, sim });
             }
 
-            // Accumulate
             for (const item of currentSimilarities) {
                 const prev = compositeSimilarities.get(item.avatar) || 0;
                 compositeSimilarities.set(item.avatar, prev + item.sim);
             }
         }
 
-        // Average and Sort Descending
         const results = [];
         const count = this.validCaches.length;
         for (const [avatar, total] of compositeSimilarities.entries()) {

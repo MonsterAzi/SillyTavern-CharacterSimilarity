@@ -330,6 +330,11 @@
     color: #ccc;
 }
 
+/* Style for predicted ratings */
+.charSim-rating-predicted {
+    color: #89CFF0 !important;
+}
+
 /* Similar Characters Horizontal List */
 .charSim-similar-list {
     display: flex;
