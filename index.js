@@ -237,6 +237,15 @@ class ComputeEngine {
         return 1 - this.calculateCosineSimilarity(vecA, vecB);
     }
 
+    static calculateEuclideanDistance(vecA, vecB) {
+        let sum = 0;
+        for (let i = 0; i < vecA.length; i++) {
+            const diff = vecA[i] - vecB[i];
+            sum += diff * diff;
+        }
+        return Math.sqrt(sum);
+    }
+
     static normalizeScores(results) {
         if (!results || results.length === 0) return [];
         const scores = results.map(r => r.distance);
@@ -261,7 +270,6 @@ class ComputeEngine {
 
         const results = [];
         for (const [avatar, vec] of embeddingMap.entries()) {
-            // Using Cosine Distance for uniqueness calculation
             const distance = this.calculateCosineDistance(vec, mean);
             results.push({ avatar, distance });
         }
@@ -280,7 +288,6 @@ class ComputeEngine {
 
             for (let j = 0; j < n; j++) {
                 if (i === j) continue;
-                // Cosine Distance
                 const d = this.calculateCosineDistance(currentVec, entries[j][1]);
                 distances.push(d);
             }
@@ -306,7 +313,6 @@ class ComputeEngine {
             const dists = [];
             for (let j = 0; j < n; j++) {
                 if (i === j) continue;
-                // Cosine Distance
                 dists.push({ idx: j, dist: this.calculateCosineDistance(vecA, entries[j][1]) });
             }
             dists.sort((a, b) => a.dist - b.dist);
@@ -536,7 +542,6 @@ class ComputeEngine {
             const dists = [];
             for(let i=0; i<n; i++) {
                 if(isRealIndex === i) continue;
-                // Cosine Distance used for graph structure
                 dists.push(this.calculateCosineDistance(queryPoint, realData[i]));
             }
             dists.sort((a,b) => a - b);
@@ -975,10 +980,13 @@ class UIManager {
 
         const html = batch.map(s => {
             const percent = Math.round(s.similarity * 100) + '%';
+            // Adjusted HTML structure to fix clipping: wrapper container holds image wrapper and badge
             return `
                 <div class="charSim-grid-card" title="${s.name}" data-avatar="${s.avatar}">
-                    <div class="charSim-card-img-wrapper" style="position:relative;">
-                        <img src="${getThumbnailUrl('avatar', s.avatar)}" loading="lazy" />
+                    <div style="position: relative; margin-bottom: 10px;">
+                        <div class="charSim-card-img-wrapper" style="margin-bottom: 0;">
+                            <img src="${getThumbnailUrl('avatar', s.avatar)}" loading="lazy" />
+                        </div>
                         <div class="charSim-percent-badge">${percent}</div>
                     </div>
                     <div class="charSim-card-name">${s.name}</div>
