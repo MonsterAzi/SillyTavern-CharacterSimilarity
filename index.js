@@ -1176,7 +1176,7 @@ class UIManager {
     renderStars(container, value, isPredicted = false) {
         const stars = container.find('i');
         const color = isPredicted ? '#89CFF0' : '#ffd700'; // Light Blue vs Gold
-        const emptyColor = '#e0e0e0';
+        const emptyColor = '#4a4a4a'; // Darker grey for empty part, looks better on dark BG
 
         stars.each((index, el) => {
             const star = $(el);
@@ -1195,7 +1195,9 @@ class UIManager {
                     'background': `linear-gradient(90deg, ${color} ${percent}%, ${emptyColor} ${percent}%)`,
                     '-webkit-background-clip': 'text',
                     '-webkit-text-fill-color': 'transparent',
-                    'color': 'transparent' // Fallback/Ensures fill color takes precedence
+                    'color': 'transparent', // Fallback/Ensures fill color takes precedence
+                    'text-shadow': 'none', // Critical fix for grey artifacts
+                    '-webkit-text-stroke': '0' // Critical fix for grey artifacts
                 });
             } else {
                 // Empty star

@@ -1,3 +1,5 @@
+/* --- EXTENSION: Character Similarity --- */
+
 /* Settings Block */
 .charSim-settings-block {
     display: flex;
@@ -321,7 +323,12 @@
     margin: 10px 0;
     cursor: pointer;
     font-size: 1.5em;
-    color: #ffd700; /* Default Manual Gold */
+    color: #ffd700; 
+}
+
+.charSim-rating-container i {
+    text-shadow: none !important;
+    -webkit-text-stroke: 0;
 }
 
 /* Similar Characters Horizontal List */
