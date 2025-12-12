@@ -983,7 +983,8 @@ class UIManager {
                     <div id="charSimView_characters" class="charSim-view">
                         <div class="charSim-controls">
                             <div id="charSimBtn_search" class="menu_button menu_button_icon fa-solid fa-search" title="Search" style="margin-right: 5px;"></div>
-                            <input type="text" id="charSimInput_filter" class="text_pole" placeholder="Fuzzy & Semantic Search..." style="flex-grow:1; max-width: 200px;" />
+                            <input type="text" id="charSimInput_filter" class="text_pole" placeholder="Fuzzy & Semantic Search..." style="flex-grow:1; max-width: 180px;" />
+                            <div id="charSimBtn_random" class="menu_button menu_button_icon fa-solid fa-dice" title="Random Character"></div>
                             <div class="charSim-spacer"></div>
                             
                             <label style="margin-right: 5px;">Sort by:</label>
@@ -1084,6 +1085,8 @@ class UIManager {
                 performSearch();
             }
         });
+
+        $('#charSimBtn_random').on('click', () => this.ext.showRandomCharacter());
 
         // Details View Navigation (Delegated listener for Grid & Similar list)
         $('#characterSimilarityPanel').on('click', '.charSim-grid-card', (e) => {
@@ -1539,6 +1542,22 @@ class CharacterSimilarityExtension {
         } catch (err) {
             toastr.error(`Search failed: ${err.message}`);
             console.error(err);
+        }
+    }
+
+    showRandomCharacter() {
+        if (!characters || characters.length === 0) {
+            toastr.warning("No characters loaded.");
+            return;
+        }
+
+        const randomIndex = Math.floor(Math.random() * characters.length);
+        const randomChar = characters[randomIndex];
+
+        if (randomChar && randomChar.avatar) {
+            this.ui.showCharacterDetails(randomChar.avatar);
+        } else {
+            toastr.error("Failed to select a random character.");
         }
     }
 
