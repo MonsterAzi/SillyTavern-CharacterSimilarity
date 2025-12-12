@@ -6,7 +6,8 @@ import {
     saveSettingsDebounced, 
     eventSource, 
     event_types, 
-    getRequestHeaders 
+    getRequestHeaders,
+    selectCharacterById 
 } from "../../../../script.js";
 
 // --- Constants & Config ---
@@ -1183,7 +1184,16 @@ class UIManager {
             // Refresh list to update grid star view
             this.ext.populateLists();
         });
+
+        // Click on character image to select
+        $('#characterSimilarityPanel').on('click', '.charSim-details-img', (event) => {
+            if (event.target.closest('.character_select')) {
+                selectCharacterById(String(event.target.closest('.character_select').getAttribute('data-chid')));
+                $('#characterSimilarityPanel').removeClass('open');
+            }
+        });
     }
+
 
     toggleParamInput(method) {
         const show = ['isolation', 'lof', 'knn', 'lunar'].includes(method);
@@ -1259,6 +1269,8 @@ class UIManager {
     showCharacterDetails(avatar) {
         const char = characters.find(c => c.avatar === avatar);
         if (!char) return;
+        
+        const charIndex = characters.indexOf(char);
 
         const container = $('.charSim-details-content');
         
@@ -1285,7 +1297,7 @@ class UIManager {
 
         const html = `
             <div class="charSim-details-header">
-                <img src="${getThumbnailUrl('avatar', avatar)}" class="charSim-details-img">
+                <img src="${getThumbnailUrl('avatar', avatar)}" class="charSim-details-img character_select" data-chid="${charIndex}" style="cursor: pointer;" title="Click to open chat">
                 <div class="charSim-details-info">
                     <h1>${char.name}</h1>
                     <div style="display:flex; align-items:center; gap: 10px;">
