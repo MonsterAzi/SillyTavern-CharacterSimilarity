@@ -315,3 +315,16 @@
     font-size: 0.95em;
     line-height: 1.5;
 }
+
+/* Similar Characters Horizontal List */
+.charSim-similar-list {
+    display: flex;
+    overflow-x: auto;
+    gap: 15px;
+    padding: 10px 0;
+    margin-bottom: 15px;
+}
+
+.charSim-similar-list .charSim-grid-card {
+    flex: 0 0 140px; /* Fixed width for horizontal items */
+}

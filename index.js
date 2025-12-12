@@ -786,8 +786,8 @@ class UIManager {
             });
         });
 
-        // Details View Navigation
-        $('#charSimList_characters').on('click', '.charSim-grid-card', (e) => {
+        // Details View Navigation (Delegated listener for Grid & Similar list)
+        $('#characterSimilarityPanel').on('click', '.charSim-grid-card', (e) => {
              const actualAvatar = $(e.currentTarget).data('avatar');
              this.showCharacterDetails(actualAvatar);
         });
@@ -872,6 +872,23 @@ class UIManager {
         const firstMes = char.first_mes || "";
         const mesEx = char.mes_example || "";
 
+        // Generate Similar Characters List
+        const similar = this.ext.getSimilarCharacters(avatar).slice(0, 10);
+        let similarHtml = `<div class="charSim-similar-list">`;
+        if (similar.length > 0) {
+            similarHtml += similar.map(s => `
+                <div class="charSim-grid-card" title="${s.name}" data-avatar="${s.avatar}">
+                    <div class="charSim-card-img-wrapper">
+                        <img src="${getThumbnailUrl('avatar', s.avatar)}" loading="lazy" />
+                    </div>
+                    <div class="charSim-card-name">${s.name}</div>
+                </div>
+            `).join('');
+        } else {
+            similarHtml += `<p style="padding:10px;">Not enough data for similarity.</p>`;
+        }
+        similarHtml += `</div>`;
+
         const html = `
             <div class="charSim-details-header">
                 <img src="${getThumbnailUrl('avatar', avatar)}" class="charSim-details-img">
@@ -881,6 +898,11 @@ class UIManager {
                 </div>
             </div>
             
+            <div class="charSim-field">
+                <label>Similar Characters</label>
+                ${similarHtml}
+            </div>
+
             <div class="charSim-details-toggle">
                 <i class="fa-solid fa-eye-slash"></i> Show Character Data
             </div>
@@ -1080,6 +1102,55 @@ class CharacterSimilarityExtension {
                 console.error(e);
             }
         }, 10);
+    }
+
+    /**
+     * Finds characters similar to target using Multi-Model Caching
+     */
+    getSimilarCharacters(targetAvatar) {
+        if (this.validCaches.length === 0) return [];
+        
+        const compositeDistances = new Map(); // avatar -> totalDistance
+
+        for (const cacheObj of this.validCaches) {
+            const map = cacheObj.map;
+            const targetVec = map.get(targetAvatar);
+            if (!targetVec) continue;
+
+            // Calculate distances for this model
+            let maxDist = 0;
+            const currentDistances = [];
+
+            for (const [avatar, vec] of map.entries()) {
+                if (avatar === targetAvatar) continue;
+                const dist = ComputeEngine.calculateEuclideanDistance(targetVec, vec);
+                if (dist > maxDist) maxDist = dist;
+                currentDistances.push({ avatar, dist });
+            }
+
+            // Normalize and accumulate
+            for (const item of currentDistances) {
+                const norm = maxDist > 0 ? item.dist / maxDist : 0;
+                const prev = compositeDistances.get(item.avatar) || 0;
+                compositeDistances.set(item.avatar, prev + norm);
+            }
+        }
+
+        // Average and Sort
+        const results = [];
+        const count = this.validCaches.length;
+        for (const [avatar, total] of compositeDistances.entries()) {
+            const char = characters.find(c => c.avatar === avatar);
+            if (char) {
+                results.push({
+                    avatar,
+                    name: char.name,
+                    distance: total / count
+                });
+            }
+        }
+
+        return results.sort((a, b) => a.distance - b.distance);
     }
 
     toggleSort() {
