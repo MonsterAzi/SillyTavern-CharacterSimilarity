@@ -283,12 +283,6 @@
     box-shadow: 0 5px 15px rgba(0,0,0,0.3);
     border: 2px solid var(--border-color);
     cursor: pointer;
-    transition: transform 0.2s, box-shadow 0.2s;
-}
-
-.charSim-details-img:hover {
-    transform: scale(1.03);
-    box-shadow: 0 8px 20px rgba(0,0,0,0.4);
 }
 
 .charSim-details-info h1 {

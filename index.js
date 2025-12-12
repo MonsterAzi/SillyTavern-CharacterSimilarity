@@ -7,7 +7,10 @@ import {
     eventSource, 
     event_types, 
     getRequestHeaders,
-    select_character 
+    selectCharacterById,
+    setActiveCharacter,
+    setActiveGroup,
+    applyTagsOnCharacterSelect,
 } from "../../../../script.js";
 
 // --- Constants & Config ---
@@ -1098,12 +1101,8 @@ class UIManager {
         $('#characterSimilarityPanel').on('click', '.charSim-details-img', (e) => {
             const avatar = $(e.currentTarget).data('avatar');
             if (avatar) {
-                const character = characters.find(c => c.avatar === avatar);
-                if (character) {
-                    select_character(character.avatar);
-                    toastr.success(`Loaded character: ${character.name}`);
-                    $('#characterSimilarityPanel').removeClass('open');
-                }
+                this.ext.loadCharacter(avatar);
+                $('#characterSimilarityPanel').removeClass('open');
             }
         });
 
@@ -1481,6 +1480,28 @@ class CharacterSimilarityExtension {
         }
         saveSettingsDebounced();
         this.updatePredictions(); // Retrain on change
+    }
+
+    loadCharacter(avatar) {
+        const char = characters.find(c => c.avatar === avatar);
+        if (!char) {
+            toastr.error("Character not found.");
+            return;
+        }
+
+        const id = String(characters.findIndex(it => it === char));
+        if (id === '-1') {
+            toastr.error("Could not find character index.");
+            return;
+        }
+
+        const tagWorkaround = document.createElement('div');
+        tagWorkaround.setAttribute('chid', id);
+        applyTagsOnCharacterSelect.call(tagWorkaround);
+        selectCharacterById(id);
+        setActiveCharacter(char.avatar);
+        setActiveGroup(null);
+        toastr.success(`Loaded character: ${char.name}`);
     }
 
     async performSearch() {
