@@ -132,7 +132,6 @@ class ComputeEngine {
     static computeKNNUniqueness(embeddingMap, k) {
         const entries = Array.from(embeddingMap.entries()); // [[avatar, vec], ...]
         const n = entries.length;
-        // Clamp k
         const neighborCount = Math.max(1, Math.min(k, n - 1));
         const results = [];
 
@@ -140,18 +139,15 @@ class ComputeEngine {
             const [currentAvatar, currentVec] = entries[i];
             const distances = [];
 
-            // Calculate distance to all others
             for (let j = 0; j < n; j++) {
                 if (i === j) continue;
                 const d = this.calculateEuclideanDistance(currentVec, entries[j][1]);
                 distances.push(d);
             }
 
-            // Sort and take k nearest
             distances.sort((a, b) => a - b);
             const kNearest = distances.slice(0, neighborCount);
             
-            // Average distance to k neighbors
             const avgDist = kNearest.reduce((acc, val) => acc + val, 0) / neighborCount;
             results.push({ avatar: currentAvatar, distance: avgDist });
         }
@@ -169,8 +165,7 @@ class ComputeEngine {
         const n = entries.length;
         const neighborCount = Math.max(1, Math.min(k, n - 1));
 
-        // 1. Find k-nearest neighbors and k-distance for every point
-        // Store: { neighbors: [idx, dist], kDistance: number }
+        // 1. Find neighbors and k-distance
         const neighborhoodInfo = new Array(n);
 
         for (let i = 0; i < n; i++) {
@@ -182,16 +177,13 @@ class ComputeEngine {
             }
             dists.sort((a, b) => a.dist - b.dist);
             
-            // Keep strictly k neighbors for the set N_k(A)
             const neighbors = dists.slice(0, neighborCount);
-            // k-distance is the distance to the k-th neighbor
             const kDistance = neighbors[neighborCount - 1].dist;
             
             neighborhoodInfo[i] = { neighbors, kDistance };
         }
 
-        // 2. Calculate Reachability Distance and Local Reachability Density (LRD)
-        // reach_dist(A, B) = max(k_distance(B), distance(A, B))
+        // 2. Reachability Distance and LRD
         const lrd = new Float32Array(n);
 
         for (let i = 0; i < n; i++) {
@@ -207,13 +199,11 @@ class ComputeEngine {
                 sumReachDist += reachDist;
             }
 
-            // Prevent division by zero with small epsilon
             const avgReachDist = sumReachDist / neighborCount;
             lrd[i] = avgReachDist > 0 ? (1 / avgReachDist) : 0;
         }
 
-        // 3. Calculate LOF
-        // LOF(A) = (Sum(LRD(B)) / LRD(A)) / k
+        // 3. LOF Score
         const results = [];
         for (let i = 0; i < n; i++) {
             const { neighbors } = neighborhoodInfo[i];
@@ -237,50 +227,39 @@ class ComputeEngine {
 
     /**
      * Algorithm 4: Isolation Forest
-     * Randomly partitions data. Outliers are isolated in fewer steps (shorter path length).
-     * N = Number of trees.
+     * Randomly partitions data. Outliers are isolated in fewer steps.
      */
     static computeIsolationForest(embeddingMap, nTrees = 100) {
-        const entries = Array.from(embeddingMap.entries()); // [[avatar, vec], ...]
-        const data = entries.map(e => e[1]); // Just vectors
+        const entries = Array.from(embeddingMap.entries());
+        const data = entries.map(e => e[1]);
         const n = data.length;
         const dim = data[0].length;
-        const subsampleSize = Math.min(256, n); // Standard IF param
+        const subsampleSize = Math.min(256, n);
         const heightLimit = Math.ceil(Math.log2(subsampleSize));
 
-        // Helper: Average path length of unsuccessful search in BST
         const c = (size) => {
             if (size <= 1) return 0;
             return 2 * (Math.log(size - 1) + 0.5772156649) - (2 * (size - 1) / size);
         };
         const avgPathLengthNormalization = c(subsampleSize);
 
-        // Build Trees and count paths
         const pathLengths = new Float32Array(n).fill(0);
 
         for (let t = 0; t < nTrees; t++) {
-            // 1. Subsample indices
+            // Subsample
             const indices = [];
             for(let i=0; i<n; i++) indices.push(i);
-            // Fisher-Yates shuffle to pick random subset
             for (let i = indices.length - 1; i > 0; i--) {
                 const j = Math.floor(Math.random() * (i + 1));
                 [indices[i], indices[j]] = [indices[j], indices[i]];
             }
-            const sampleIndices = indices.slice(0, subsampleSize);
             
-            // 2. Build Tree (represented implicitly by recursion)
-            // We only care about the path length for each point in the sample
-            // For points NOT in the sample, standard IF ignores them or runs them down the tree.
-            // For scoring ALL points, we usually run all points down the trees built from samples.
-            
-            // Define a recursive tree builder/evaluator
+            // Build & Evaluate Tree recursively
             const buildAndEvaluate = (currentIndices, currentDepth) => {
                 if (currentDepth >= heightLimit || currentIndices.length <= 1) {
-                    return; // Leaf
+                    return;
                 }
 
-                // Random split
                 const feature = Math.floor(Math.random() * dim);
                 let min = Infinity, max = -Infinity;
                 for(const idx of currentIndices) {
@@ -289,15 +268,14 @@ class ComputeEngine {
                     if(val > max) max = val;
                 }
                 
-                if (min === max) return; // Cannot split
+                if (min === max) return;
 
                 const splitValue = Math.random() * (max - min) + min;
-
                 const left = [];
                 const right = [];
 
                 for (const idx of currentIndices) {
-                    pathLengths[idx]++; // Increment depth for this point
+                    pathLengths[idx]++;
                     if (data[idx][feature] < splitValue) left.push(idx);
                     else right.push(idx);
                 }
@@ -306,17 +284,9 @@ class ComputeEngine {
                 buildAndEvaluate(right, currentDepth + 1);
             };
 
-            // Run for this tree (using ALL data to get scores for everyone, though trees are usually built on samples.
-            // Modified approach for small datasets: Use all data for split calculation if N is small, 
-            // or strictly adhere to subsample. Here we stick to subsample logic for tree construction structure
-            // but we need scores for EVERY point. 
-            // To keep it single-pass and simple: We will recursively split the *entire* dataset indices.
-            // This is effectively an Isolation Tree on the whole dataset, which is fine for N < 5000.
             buildAndEvaluate(indices, 0);
         }
 
-        // Calculate Anomaly Score
-        // s(x, n) = 2 ^ (-E(h(x)) / c(n))
         const results = [];
         for (let i = 0; i < n; i++) {
             const avgPathLen = pathLengths[i] / nTrees;
@@ -324,6 +294,58 @@ class ComputeEngine {
             results.push({ avatar: entries[i][0], distance: score });
         }
 
+        return results;
+    }
+
+    /**
+     * Algorithm 5: ECOD (Empirical Cumulative Distribution Functions for Outlier Detection)
+     * Parameter-free. Estimates tail probabilities for each dimension.
+     */
+    static computeECOD(embeddingMap) {
+        const entries = Array.from(embeddingMap.entries()); // [[avatar, vec], ...]
+        const data = entries.map(e => e[1]);
+        const n = data.length;
+        if (n === 0) return [];
+        const dim = data[0].length;
+        
+        // Initialize scores
+        const scores = new Float32Array(n).fill(0);
+
+        // Process per dimension
+        for (let d = 0; d < dim; d++) {
+            // Extract column
+            const column = new Float32Array(n);
+            for(let i=0; i<n; i++) column[i] = data[i][d];
+            
+            // Create rank indices
+            const indices = new Int32Array(n);
+            for(let i=0; i<n; i++) indices[i] = i;
+            
+            indices.sort((a, b) => column[a] - column[b]);
+            
+            // Calculate ECDF probabilities
+            // Left tail: P(X <= x)
+            // Right tail: P(X >= x)
+            // Using (r + 1) / (n + 1) for smoothing
+            
+            for(let r=0; r<n; r++) {
+                const originalIndex = indices[r];
+                
+                const pLeft = (r + 1) / (n + 1);
+                const pRight = (n - r) / (n + 1);
+                
+                // Score is the log of the inverse probability (skewness independent)
+                const sLeft = -Math.log(pLeft);
+                const sRight = -Math.log(pRight);
+                
+                scores[originalIndex] += Math.max(sLeft, sRight);
+            }
+        }
+        
+        const results = [];
+        for (let i = 0; i < n; i++) {
+            results.push({ avatar: entries[i][0], distance: scores[i] });
+        }
         return results;
     }
 }
@@ -375,6 +397,7 @@ class UIManager {
                             
                             <select id="charSimSelect_method" class="text_pole charSim-select">
                                 <option value="mean">Global Mean Distance</option>
+                                <option value="ecod">ECOD (Parameter-free)</option>
                                 <option value="isolation">Isolation Forest</option>
                                 <option value="lof">Local Outlier Factor</option>
                                 <option value="knn">kNN Distance</option>
@@ -606,6 +629,9 @@ class CharacterSimilarityExtension {
                 let results = [];
 
                 switch (method) {
+                    case 'ecod':
+                        results = ComputeEngine.computeECOD(this.embeddings);
+                        break;
                     case 'isolation':
                         results = ComputeEngine.computeIsolationForest(this.embeddings, n);
                         break;
