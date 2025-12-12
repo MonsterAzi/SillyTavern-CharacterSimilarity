@@ -34,6 +34,21 @@ async function hashText(message) {
 }
 
 /**
+ * Helper: Calculate Quantile
+ */
+function quantile(arr, q) {
+    const sorted = [...arr].sort((a, b) => a - b);
+    const pos = (sorted.length - 1) * q;
+    const base = Math.floor(pos);
+    const rest = pos - base;
+    if (sorted[base + 1] !== undefined) {
+        return sorted[base] + rest * (sorted[base + 1] - sorted[base]);
+    } else {
+        return sorted[base];
+    }
+}
+
+/**
  * Service Layer: Handles communication with embedding providers and Caching.
  */
 class SimilarityService {
@@ -298,26 +313,56 @@ class SimpleDecisionTree {
 }
 
 class GradientBoostingRegressor {
-    constructor(nEstimators = 20, learningRate = 0.1, maxDepth = 3) {
+    constructor(nEstimators = 30, learningRate = 0.1, maxDepth = 3, alpha = null) {
         this.nEstimators = nEstimators;
         this.learningRate = learningRate;
         this.maxDepth = maxDepth;
+        this.alpha = alpha; // If not null, use Quantile Loss
         this.trees = [];
         this.basePrediction = 0;
     }
 
     fit(X, y) {
-        const mean = y.reduce((a, b) => a + b, 0) / y.length;
-        this.basePrediction = mean;
-        let residuals = y.map(val => val - mean);
+        if (this.alpha === null) {
+            // Standard MSE Boosting (Mean)
+            const mean = y.reduce((a, b) => a + b, 0) / y.length;
+            this.basePrediction = mean;
+            let currentPreds = new Array(y.length).fill(mean);
 
-        for (let i = 0; i < this.nEstimators; i++) {
-            const tree = new SimpleDecisionTree(this.maxDepth);
-            tree.fit(X, residuals);
-            this.trees.push(tree);
+            for (let i = 0; i < this.nEstimators; i++) {
+                // Residuals = y - F(x)
+                const residuals = y.map((yi, idx) => yi - currentPreds[idx]);
+                
+                const tree = new SimpleDecisionTree(this.maxDepth);
+                tree.fit(X, residuals);
+                this.trees.push(tree);
 
-            const predictions = X.map(row => tree.predict(row));
-            residuals = residuals.map((r, idx) => r - (this.learningRate * predictions[idx]));
+                const updates = X.map(row => tree.predict(row));
+                for(let k=0; k<y.length; k++) {
+                    currentPreds[k] += this.learningRate * updates[k];
+                }
+            }
+        } else {
+            // Quantile Boosting (Gradient = alpha or alpha-1)
+            // 1. Initial prediction = quantile of y
+            this.basePrediction = quantile(y, this.alpha);
+            let currentPreds = new Array(y.length).fill(this.basePrediction);
+
+            for (let i = 0; i < this.nEstimators; i++) {
+                // Negative Gradient for Pinball Loss
+                const gradients = y.map((yi, idx) => {
+                    return (yi > currentPreds[idx]) ? this.alpha : (this.alpha - 1.0);
+                });
+
+                const tree = new SimpleDecisionTree(this.maxDepth);
+                tree.fit(X, gradients);
+                this.trees.push(tree);
+
+                const updates = X.map(row => tree.predict(row));
+                for(let k=0; k<y.length; k++) {
+                    currentPreds[k] += this.learningRate * updates[k];
+                }
+            }
         }
     }
 
@@ -425,18 +470,36 @@ class ComputeEngine {
 
         if (trainX.length < 3 || predictX.length === 0) return new Map();
 
-        // 2. Train Gradient Boosting
-        const gb = new GradientBoostingRegressor(30, 0.1, 3);
-        gb.fit(trainX, trainY);
+        // 2. Train Gradient Boosting Models (Quantile Regressions)
+        // Median (Prediction)
+        const gbMed = new GradientBoostingRegressor(30, 0.1, 3, 0.5);
+        gbMed.fit(trainX, trainY);
+        const predMed = gbMed.predict(predictX);
 
-        // 3. Predict
-        const predictions = gb.predict(predictX);
+        // Lower Bound (16%)
+        const gbLow = new GradientBoostingRegressor(30, 0.1, 3, 0.16);
+        gbLow.fit(trainX, trainY);
+        const predLow = gbLow.predict(predictX);
+
+        // Upper Bound (84%)
+        const gbHigh = new GradientBoostingRegressor(30, 0.1, 3, 0.84);
+        gbHigh.fit(trainX, trainY);
+        const predHigh = gbHigh.predict(predictX);
+
+        // 3. Assemble Results
         const resultMap = new Map();
         
-        predictions.forEach((val, idx) => {
-            // Clamp 0.5 to 5.0, but allow granularity (0.01 precision)
+        predMed.forEach((val, idx) => {
+            // Clamp score
             let score = Math.max(0.5, Math.min(5.0, val));
-            resultMap.set(predictAvatars[idx], score);
+            
+            // Calculate Interval Width (Confidence proxy)
+            // Smaller width = Higher confidence
+            const lower = predLow[idx];
+            const upper = predHigh[idx];
+            let width = Math.abs(upper - lower);
+            
+            resultMap.set(predictAvatars[idx], { score, width });
         });
 
         return resultMap;
@@ -870,6 +933,7 @@ class UIManager {
                                 <option value="uniqueness">Uniqueness</option>
                                 <option value="tokens">Tokens (Est.)</option>
                                 <option value="rating">Rating</option>
+                                <option value="confidence">Confidence</option>
                             </select>
                             
                             <div id="charSimBtn_charSortDir" class="menu_button menu_button_icon fa-solid fa-arrow-down" title="Toggle Order"></div>
@@ -1006,10 +1070,13 @@ class UIManager {
             const avatar = container.data('avatar');
             // Check for manual, then predicted
             let value = this.ext.getRating(avatar);
+            let isPredicted = false;
+            
             if (value === 0 && this.ext.predictedRatings.has(avatar)) {
-                value = this.ext.predictedRatings.get(avatar);
+                value = this.ext.predictedRatings.get(avatar).score;
+                isPredicted = true;
             }
-            const isPredicted = this.ext.getRating(avatar) === 0 && this.ext.predictedRatings.has(avatar);
+            
             this.renderStars(container, value, isPredicted);
         });
 
@@ -1044,7 +1111,7 @@ class UIManager {
             let value = 0;
             let isPredicted = false;
             if (this.ext.predictedRatings.has(avatar)) {
-                value = this.ext.predictedRatings.get(avatar);
+                value = this.ext.predictedRatings.get(avatar).score;
                 isPredicted = true;
             }
             
@@ -1145,7 +1212,7 @@ class UIManager {
 
         // If no manual rating, check for prediction
         if (currentRating === 0 && this.ext.predictedRatings.has(avatar)) {
-            currentRating = this.ext.predictedRatings.get(avatar);
+            currentRating = this.ext.predictedRatings.get(avatar).score;
             isPredicted = true;
         }
 
@@ -1350,8 +1417,12 @@ class CharacterSimilarityExtension {
             // Rating (Manual or Predicted)
             let rating = this.getRating(c.avatar);
             let isPredicted = false;
+            let confidenceWidth = 0; // Default max confidence (width 0) for manual
+
             if (rating === 0 && this.predictedRatings.has(c.avatar)) {
-                rating = this.predictedRatings.get(c.avatar);
+                const p = this.predictedRatings.get(c.avatar);
+                rating = p.score;
+                confidenceWidth = p.width;
                 isPredicted = true;
             }
 
@@ -1364,6 +1435,7 @@ class CharacterSimilarityExtension {
                 uniquenessScore: score,
                 rating: rating,
                 isPredicted: isPredicted,
+                confidenceWidth: confidenceWidth,
                 tokenCount: tokenProxy
             };
         });
@@ -1380,9 +1452,11 @@ class CharacterSimilarityExtension {
             } else if (sortMethod === 'tokens') {
                 return (a.tokenCount - b.tokenCount) * mult;
             } else if (sortMethod === 'rating') {
-                // For rating, usually higher is better, so 'desc' should be default conceptual sort.
-                // But following the arrow logic:
                 return (a.rating - b.rating) * mult;
+            } else if (sortMethod === 'confidence') {
+                // Lower width = Higher confidence
+                // Manual ratings (width 0) come first in ASC
+                return (a.confidenceWidth - b.confidenceWidth) * mult;
             }
             return 0;
         });
