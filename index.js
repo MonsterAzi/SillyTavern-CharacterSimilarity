@@ -643,6 +643,8 @@ class UIManager {
     constructor(extension) {
         this.ext = extension;
         this.elements = {};
+        this.currentSimilarList = [];
+        this.currentSimilarOffset = 0;
     }
 
     /**
@@ -872,22 +874,9 @@ class UIManager {
         const firstMes = char.first_mes || "";
         const mesEx = char.mes_example || "";
 
-        // Generate Similar Characters List
-        const similar = this.ext.getSimilarCharacters(avatar).slice(0, 10);
-        let similarHtml = `<div class="charSim-similar-list">`;
-        if (similar.length > 0) {
-            similarHtml += similar.map(s => `
-                <div class="charSim-grid-card" title="${s.name}" data-avatar="${s.avatar}">
-                    <div class="charSim-card-img-wrapper">
-                        <img src="${getThumbnailUrl('avatar', s.avatar)}" loading="lazy" />
-                    </div>
-                    <div class="charSim-card-name">${s.name}</div>
-                </div>
-            `).join('');
-        } else {
-            similarHtml += `<p style="padding:10px;">Not enough data for similarity.</p>`;
-        }
-        similarHtml += `</div>`;
+        // Reset similar list state
+        this.currentSimilarList = this.ext.getSimilarCharacters(avatar);
+        this.currentSimilarOffset = 0;
 
         const html = `
             <div class="charSim-details-header">
@@ -898,11 +887,6 @@ class UIManager {
                 </div>
             </div>
             
-            <div class="charSim-field">
-                <label>Similar Characters</label>
-                ${similarHtml}
-            </div>
-
             <div class="charSim-details-toggle">
                 <i class="fa-solid fa-eye-slash"></i> Show Character Data
             </div>
@@ -929,12 +913,57 @@ class UIManager {
                     <div class="charSim-field-text">${mesEx}</div>
                 </div>
             </div>
+
+            <div class="charSim-field">
+                <label>Similar Characters</label>
+                <div id="charSimSimilarList" class="charSim-similar-list"></div>
+            </div>
         `;
 
         container.html(html);
         
+        // Initial load of similar items
+        this.loadNextSimilarBatch();
+
+        // Bind infinite scroll
+        const similarContainer = $('#charSimSimilarList');
+        similarContainer.on('scroll', (e) => {
+            const el = e.currentTarget;
+            if (el.scrollLeft + el.clientWidth >= el.scrollWidth - 10) {
+                this.loadNextSimilarBatch();
+            }
+        });
+        
         $('.charSim-view').removeClass('active');
         $('#charSimView_details').addClass('active');
+    }
+
+    loadNextSimilarBatch() {
+        if (this.currentSimilarOffset >= this.currentSimilarList.length) return;
+
+        const batch = this.currentSimilarList.slice(this.currentSimilarOffset, this.currentSimilarOffset + 10);
+        const similarContainer = $('#charSimSimilarList');
+
+        if (this.currentSimilarOffset === 0 && batch.length === 0) {
+            similarContainer.html('<p style="padding:10px;">Not enough data for similarity.</p>');
+            return;
+        }
+
+        const html = batch.map(s => {
+            const percent = Math.round((1 - s.distance) * 100) + '%';
+            return `
+                <div class="charSim-grid-card" title="${s.name}" data-avatar="${s.avatar}">
+                    <div class="charSim-card-img-wrapper" style="position:relative;">
+                        <img src="${getThumbnailUrl('avatar', s.avatar)}" loading="lazy" />
+                        <div class="charSim-percent-badge">${percent}</div>
+                    </div>
+                    <div class="charSim-card-name">${s.name}</div>
+                </div>
+            `;
+        }).join('');
+
+        similarContainer.append(html);
+        this.currentSimilarOffset += 10;
     }
 
     createEmptyState(msg) {
