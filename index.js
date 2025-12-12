@@ -11,6 +11,7 @@ import {
 
 // --- Constants & Config ---
 const EXTENSION_NAME = "character_similarity";
+const CACHE_KEY = "character_similarity_cache";
 const DEFAULT_SETTINGS = {
     koboldUrl: 'http://127.0.0.1:5001',
     uniquenessMethod: 'mean',
@@ -21,7 +22,18 @@ const DEFAULT_SETTINGS = {
 const FIELDS_TO_EMBED = ['name', 'description', 'personality', 'scenario', 'first_mes', 'mes_example'];
 
 /**
- * Service Layer: Handles communication with embedding providers.
+ * Helper: SHA-256 Hashing for Text Comparison
+ */
+async function hashText(message) {
+    const msgBuffer = new TextEncoder().encode(message);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    return hashHex;
+}
+
+/**
+ * Service Layer: Handles communication with embedding providers and Caching.
  */
 class SimilarityService {
     constructor(settings) {
@@ -38,7 +50,35 @@ class SimilarityService {
     }
 
     /**
-     * Fetches embeddings for a list of strings.
+     * Determines the current model name by sending an empty query.
+     */
+    async getModelName() {
+        const url = this.koboldUrl;
+        if (!url) return "unknown_model";
+
+        try {
+            const response = await fetch('/api/backends/kobold/embed', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    items: [""], // Empty query
+                    server: url,
+                }),
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                // Per instructions: check what model name is in the return
+                if (data.model) return data.model;
+            }
+        } catch (e) {
+            console.warn("Failed to probe model name, using default.", e);
+        }
+        return "default_model";
+    }
+
+    /**
+     * Fetches embeddings with Caching support.
      * @param {Array<{avatar:string, text:string}>} items 
      * @returns {Promise<Map<string, number[]>>} Map of avatar -> embedding vector
      */
@@ -46,32 +86,89 @@ class SimilarityService {
         const url = this.koboldUrl;
         if (!url) throw new Error("KoboldCpp URL is not configured.");
 
-        const response = await fetch('/api/backends/kobold/embed', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({
-                items: items.map(i => i.text),
-                server: url,
-            }),
-        });
+        // 1. Identify Model
+        const modelName = await this.getModelName();
+        console.log(`[CharSim] Using Embedding Model: ${modelName}`);
 
-        if (!response.ok) {
-            throw new Error(`Server returned status ${response.status}. Check console.`);
-        }
+        // 2. Load Cache
+        // Structure: settings[CACHE_KEY][modelName][avatar] = { hash: "...", vector: [...] }
+        if (!extension_settings[CACHE_KEY]) extension_settings[CACHE_KEY] = {};
+        if (!extension_settings[CACHE_KEY][modelName]) extension_settings[CACHE_KEY][modelName] = {};
+        
+        const currentCache = extension_settings[CACHE_KEY][modelName];
+        const finalMap = new Map();
+        const toRequest = [];
+        const toRequestIndices = []; // To map back result to items
 
-        const data = await response.json();
-        if (!data.embeddings || data.embeddings.length !== items.length) {
-            throw new Error("Invalid response format from embedding server.");
-        }
+        // 3. Diffing (Check Cache)
+        for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            const currentHash = await hashText(item.text);
+            const cached = currentCache[item.avatar];
 
-        const resultMap = new Map();
-        data.embeddings.forEach((vec, idx) => {
-            if (vec && vec.length > 0) {
-                resultMap.set(items[idx].avatar, vec);
+            if (cached && cached.hash === currentHash && cached.vector) {
+                // Hit
+                finalMap.set(item.avatar, cached.vector);
+            } else {
+                // Miss (New or Changed)
+                toRequest.push(item);
+                toRequestIndices.push(i);
+                // Temporarily store hash to save later
+                item._newHash = currentHash; 
             }
-        });
+        }
 
-        return resultMap;
+        // 4. Batch Request (only if needed)
+        if (toRequest.length > 0) {
+            console.log(`[CharSim] Embedding ${toRequest.length} new/changed items.`);
+            toastr.info(`Embedding ${toRequest.length} new items...`);
+
+            const response = await fetch('/api/backends/kobold/embed', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    items: toRequest.map(i => i.text),
+                    server: url,
+                }),
+            });
+
+            if (!response.ok) {
+                throw new Error(`Server returned status ${response.status}.`);
+            }
+
+            const data = await response.json();
+            if (!data.embeddings) throw new Error("Invalid response format.");
+
+            // 5. Update Cache & Final Map
+            data.embeddings.forEach((vec, idx) => {
+                if (vec && vec.length > 0) {
+                    const originalItem = toRequest[idx];
+                    
+                    // Update Memory Map
+                    finalMap.set(originalItem.avatar, vec);
+
+                    // Update Persistent Cache
+                    currentCache[originalItem.avatar] = {
+                        hash: originalItem._newHash,
+                        vector: vec
+                    };
+                }
+            });
+
+            // Persist
+            extension_settings[CACHE_KEY][modelName] = currentCache;
+            saveSettingsDebounced();
+        } else {
+            console.log(`[CharSim] All items retrieved from cache for ${modelName}.`);
+        }
+
+        return finalMap;
+    }
+
+    clearCache() {
+        extension_settings[CACHE_KEY] = {};
+        saveSettingsDebounced();
+        toastr.success("Embedding cache cleared.");
     }
 }
 
@@ -111,7 +208,6 @@ class ComputeEngine {
         const max = Math.max(...scores);
         const range = max - min;
         
-        // If all scores are identical, return 0 (no relative uniqueness)
         if (range === 0) return results.map(r => ({ ...r, distance: 0 }));
 
         return results.map(r => ({
@@ -479,48 +575,32 @@ class ComputeEngine {
         return results;
     }
 
-    /**
-     * Algorithm 8: LODA (Ensemble)
-     * Aggregates 9 different outlier detection methods.
-     */
     static computeLODAEnsemble(embeddingMap) {
         const n = embeddingMap.size;
         if (n < 2) return [];
 
-        // Parameters derived from n
         const n_sqrt = Math.sqrt(n);
         const k_025 = Math.max(1, Math.round(Math.pow(n, 0.25)));
         const k_050 = Math.max(1, Math.round(n_sqrt));
         const k_075 = Math.max(1, Math.round(Math.pow(n, 0.75)));
         
-        // Collect raw results
         const rawResults = [];
         
-        // 1. kNN (root of root)
         rawResults.push(this.normalizeScores(this.computeKNNUniqueness(embeddingMap, k_025)));
-        // 2. kNN (root)
         rawResults.push(this.normalizeScores(this.computeKNNUniqueness(embeddingMap, k_050)));
-        // 3. kNN (root ^ 1.5)
         rawResults.push(this.normalizeScores(this.computeKNNUniqueness(embeddingMap, k_075)));
         
-        // 4. LOF (10)
         rawResults.push(this.normalizeScores(this.computeLOF(embeddingMap, 10)));
-        // 5. LOF (30)
         rawResults.push(this.normalizeScores(this.computeLOF(embeddingMap, 30)));
         
-        // 6. Isolation Forest (100)
         rawResults.push(this.normalizeScores(this.computeIsolationForest(embeddingMap, 100)));
         
-        // 7. HBOS
         rawResults.push(this.normalizeScores(this.computeHBOS(embeddingMap)));
         
-        // 8. ECOD
         rawResults.push(this.normalizeScores(this.computeECOD(embeddingMap)));
         
-        // 9. LUNAR (root)
         rawResults.push(this.normalizeScores(this.computeLUNAR(embeddingMap, k_050)));
 
-        // Aggregation (Average)
         const aggregated = new Map();
         
         for (const resultSet of rawResults) {
@@ -558,7 +638,10 @@ class UIManager {
         <div class="charSim-settings-block">
             <label>KoboldCpp URL</label>
             <input id="charSim_url_input" class="text_pole" type="text" placeholder="http://127.0.0.1:5001" />
-            <small>Must include http:// and be accessible.</small>
+            <div style="display:flex; justify-content: space-between; align-items: center;">
+                <small>Must include http:// and be accessible.</small>
+                <div id="charSimBtn_clearCache" class="menu_button" style="width: auto; padding: 2px 8px; font-size: 0.8em;">Clear Cache</div>
+            </div>
         </div>`;
         $("#extensions_settings2").append(settingsTemplate);
 
@@ -566,6 +649,7 @@ class UIManager {
         const urlInput = $("#charSim_url_input");
         urlInput.val(this.ext.settings.koboldUrl);
         urlInput.on("input", (e) => this.ext.updateSetting('koboldUrl', e.target.value));
+        $('#charSimBtn_clearCache').on('click', () => this.ext.clearCache());
 
         // Main Panel Injection
         const panelTemplate = `
@@ -797,7 +881,6 @@ class CharacterSimilarityExtension {
 
             if (texts.length === 0) throw new Error("No characters found with text content.");
 
-            toastr.info(`Sending ${texts.length} items to embedding server...`);
             this.embeddings = await this.service.fetchEmbeddings(texts);
             
             toastr.success(`Loaded ${this.embeddings.size} embeddings.`);
@@ -807,6 +890,10 @@ class CharacterSimilarityExtension {
         } finally {
             this.ui.setLoading(false);
         }
+    }
+
+    clearCache() {
+        this.service.clearCache();
     }
 
     runUniqueness() {
