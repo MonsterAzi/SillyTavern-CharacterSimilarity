@@ -6,11 +6,7 @@ import {
     saveSettingsDebounced, 
     eventSource, 
     event_types, 
-    getRequestHeaders,
-    applyTagsOnCharacterSelect,
-    selectCharacterById,
-    setActiveCharacter,
-    setActiveGroup
+    getRequestHeaders 
 } from "../../../../script.js";
 
 // --- Constants & Config ---
@@ -1103,23 +1099,6 @@ class UIManager {
              $('#charSimView_characters').addClass('active');
         });
 
-        // Load Character from Details Header
-        $('#characterSimilarityPanel').on('click', '.charSim-details-img', (e) => {
-            const avatar = $(e.currentTarget).data('avatar');
-            const char = characters.find(c => c.avatar === avatar);
-            if (!char) return;
-
-            const id = String(characters.findIndex(it => it == char));
-            const tagWorkaround = document.createElement('div');
-            tagWorkaround.setAttribute('chid', id);
-            applyTagsOnCharacterSelect.call(tagWorkaround);
-            selectCharacterById(id);
-            setActiveCharacter(char.avatar);
-            setActiveGroup(null);
-            
-            $('#characterSimilarityPanel').removeClass('open');
-        });
-
         // Details Toggle
         $('#characterSimilarityPanel').on('click', '.charSim-details-toggle', function() {
              const content = $('.charSim-details-advanced');
@@ -1306,7 +1285,7 @@ class UIManager {
 
         const html = `
             <div class="charSim-details-header">
-                <img src="${getThumbnailUrl('avatar', avatar)}" class="charSim-details-img" data-avatar="${avatar}" style="cursor: pointer;" title="Click to load character">
+                <img src="${getThumbnailUrl('avatar', avatar)}" class="charSim-details-img">
                 <div class="charSim-details-info">
                     <h1>${char.name}</h1>
                     <div style="display:flex; align-items:center; gap: 10px;">
