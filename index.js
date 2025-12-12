@@ -76,11 +76,12 @@ class SimilarityService {
 }
 
 /**
- * Compute Engine: Handles Math Tasks
+ * Compute Engine: Handles Math Algorithms
  */
 class ComputeEngine {
     
-    // Standard Math Utils
+    // --- Basic Math ---
+
     static calculateMeanVector(vectors) {
         if (!vectors || vectors.length === 0) return null;
         const count = vectors.length;
@@ -94,18 +95,23 @@ class ComputeEngine {
         return mean;
     }
 
+    // Standard Euclidean Distance (L2)
     static calculateEuclideanDistance(vecA, vecB) {
         let sum = 0;
         for (let i = 0; i < vecA.length; i++) {
-            sum += Math.abs(vecA[i] - vecB[i]);
+            const diff = vecA[i] - vecB[i];
+            sum += diff * diff;
         }
-        return sum;
+        return Math.sqrt(sum);
     }
 
+    // --- Algorithms ---
+
     /**
-     * Calculates uniqueness scores relative to library average.
+     * Algorithm 1: Global Mean Distance
+     * Simple distance from the centroid of the entire library.
      */
-    static computeUniqueness(embeddingMap) {
+    static computeGlobalMeanUniqueness(embeddingMap) {
         const vectors = Array.from(embeddingMap.values());
         const mean = this.calculateMeanVector(vectors);
         if (!mean) return [];
@@ -115,6 +121,209 @@ class ComputeEngine {
             const distance = this.calculateEuclideanDistance(vec, mean);
             results.push({ avatar, distance });
         }
+        return results;
+    }
+
+    /**
+     * Algorithm 2: k-Nearest Neighbors (kNN) Outlier Score
+     * Score is the average distance to the k nearest neighbors.
+     * Higher score = more isolated (unique).
+     */
+    static computeKNNUniqueness(embeddingMap, k) {
+        const entries = Array.from(embeddingMap.entries()); // [[avatar, vec], ...]
+        const n = entries.length;
+        // Clamp k
+        const neighborCount = Math.max(1, Math.min(k, n - 1));
+        const results = [];
+
+        for (let i = 0; i < n; i++) {
+            const [currentAvatar, currentVec] = entries[i];
+            const distances = [];
+
+            // Calculate distance to all others
+            for (let j = 0; j < n; j++) {
+                if (i === j) continue;
+                const d = this.calculateEuclideanDistance(currentVec, entries[j][1]);
+                distances.push(d);
+            }
+
+            // Sort and take k nearest
+            distances.sort((a, b) => a - b);
+            const kNearest = distances.slice(0, neighborCount);
+            
+            // Average distance to k neighbors
+            const avgDist = kNearest.reduce((acc, val) => acc + val, 0) / neighborCount;
+            results.push({ avatar: currentAvatar, distance: avgDist });
+        }
+
+        return results;
+    }
+
+    /**
+     * Algorithm 3: Local Outlier Factor (LOF)
+     * Compares local density of a point to local density of its neighbors.
+     * Score > 1 implies outlier.
+     */
+    static computeLOF(embeddingMap, k) {
+        const entries = Array.from(embeddingMap.entries());
+        const n = entries.length;
+        const neighborCount = Math.max(1, Math.min(k, n - 1));
+
+        // 1. Find k-nearest neighbors and k-distance for every point
+        // Store: { neighbors: [idx, dist], kDistance: number }
+        const neighborhoodInfo = new Array(n);
+
+        for (let i = 0; i < n; i++) {
+            const vecA = entries[i][1];
+            const dists = [];
+            for (let j = 0; j < n; j++) {
+                if (i === j) continue;
+                dists.push({ idx: j, dist: this.calculateEuclideanDistance(vecA, entries[j][1]) });
+            }
+            dists.sort((a, b) => a.dist - b.dist);
+            
+            // Keep strictly k neighbors for the set N_k(A)
+            const neighbors = dists.slice(0, neighborCount);
+            // k-distance is the distance to the k-th neighbor
+            const kDistance = neighbors[neighborCount - 1].dist;
+            
+            neighborhoodInfo[i] = { neighbors, kDistance };
+        }
+
+        // 2. Calculate Reachability Distance and Local Reachability Density (LRD)
+        // reach_dist(A, B) = max(k_distance(B), distance(A, B))
+        const lrd = new Float32Array(n);
+
+        for (let i = 0; i < n; i++) {
+            const { neighbors } = neighborhoodInfo[i];
+            let sumReachDist = 0;
+
+            for (const neighbor of neighbors) {
+                const neighborIdx = neighbor.idx;
+                const distToNeighbor = neighbor.dist;
+                const neighborKDist = neighborhoodInfo[neighborIdx].kDistance;
+                
+                const reachDist = Math.max(neighborKDist, distToNeighbor);
+                sumReachDist += reachDist;
+            }
+
+            // Prevent division by zero with small epsilon
+            const avgReachDist = sumReachDist / neighborCount;
+            lrd[i] = avgReachDist > 0 ? (1 / avgReachDist) : 0;
+        }
+
+        // 3. Calculate LOF
+        // LOF(A) = (Sum(LRD(B)) / LRD(A)) / k
+        const results = [];
+        for (let i = 0; i < n; i++) {
+            const { neighbors } = neighborhoodInfo[i];
+            let sumNeighborLrd = 0;
+            
+            for (const neighbor of neighbors) {
+                sumNeighborLrd += lrd[neighbor.idx];
+            }
+
+            const currentLrd = lrd[i];
+            let score = 0;
+            if (currentLrd > 0) {
+                score = (sumNeighborLrd / neighborCount) / currentLrd;
+            }
+
+            results.push({ avatar: entries[i][0], distance: score });
+        }
+
+        return results;
+    }
+
+    /**
+     * Algorithm 4: Isolation Forest
+     * Randomly partitions data. Outliers are isolated in fewer steps (shorter path length).
+     * N = Number of trees.
+     */
+    static computeIsolationForest(embeddingMap, nTrees = 100) {
+        const entries = Array.from(embeddingMap.entries()); // [[avatar, vec], ...]
+        const data = entries.map(e => e[1]); // Just vectors
+        const n = data.length;
+        const dim = data[0].length;
+        const subsampleSize = Math.min(256, n); // Standard IF param
+        const heightLimit = Math.ceil(Math.log2(subsampleSize));
+
+        // Helper: Average path length of unsuccessful search in BST
+        const c = (size) => {
+            if (size <= 1) return 0;
+            return 2 * (Math.log(size - 1) + 0.5772156649) - (2 * (size - 1) / size);
+        };
+        const avgPathLengthNormalization = c(subsampleSize);
+
+        // Build Trees and count paths
+        const pathLengths = new Float32Array(n).fill(0);
+
+        for (let t = 0; t < nTrees; t++) {
+            // 1. Subsample indices
+            const indices = [];
+            for(let i=0; i<n; i++) indices.push(i);
+            // Fisher-Yates shuffle to pick random subset
+            for (let i = indices.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [indices[i], indices[j]] = [indices[j], indices[i]];
+            }
+            const sampleIndices = indices.slice(0, subsampleSize);
+            
+            // 2. Build Tree (represented implicitly by recursion)
+            // We only care about the path length for each point in the sample
+            // For points NOT in the sample, standard IF ignores them or runs them down the tree.
+            // For scoring ALL points, we usually run all points down the trees built from samples.
+            
+            // Define a recursive tree builder/evaluator
+            const buildAndEvaluate = (currentIndices, currentDepth) => {
+                if (currentDepth >= heightLimit || currentIndices.length <= 1) {
+                    return; // Leaf
+                }
+
+                // Random split
+                const feature = Math.floor(Math.random() * dim);
+                let min = Infinity, max = -Infinity;
+                for(const idx of currentIndices) {
+                    const val = data[idx][feature];
+                    if(val < min) min = val;
+                    if(val > max) max = val;
+                }
+                
+                if (min === max) return; // Cannot split
+
+                const splitValue = Math.random() * (max - min) + min;
+
+                const left = [];
+                const right = [];
+
+                for (const idx of currentIndices) {
+                    pathLengths[idx]++; // Increment depth for this point
+                    if (data[idx][feature] < splitValue) left.push(idx);
+                    else right.push(idx);
+                }
+
+                buildAndEvaluate(left, currentDepth + 1);
+                buildAndEvaluate(right, currentDepth + 1);
+            };
+
+            // Run for this tree (using ALL data to get scores for everyone, though trees are usually built on samples.
+            // Modified approach for small datasets: Use all data for split calculation if N is small, 
+            // or strictly adhere to subsample. Here we stick to subsample logic for tree construction structure
+            // but we need scores for EVERY point. 
+            // To keep it single-pass and simple: We will recursively split the *entire* dataset indices.
+            // This is effectively an Isolation Tree on the whole dataset, which is fine for N < 5000.
+            buildAndEvaluate(indices, 0);
+        }
+
+        // Calculate Anomaly Score
+        // s(x, n) = 2 ^ (-E(h(x)) / c(n))
+        const results = [];
+        for (let i = 0; i < n; i++) {
+            const avgPathLen = pathLengths[i] / nTrees;
+            const score = Math.pow(2, -(avgPathLen) / avgPathLengthNormalization);
+            results.push({ avatar: entries[i][0], distance: score });
+        }
+
         return results;
     }
 }
@@ -263,6 +472,12 @@ class UIManager {
     toggleParamInput(method) {
         const show = ['isolation', 'lof', 'knn'].includes(method);
         $('#charSim_param_container').css('display', show ? 'flex' : 'none');
+        
+        // Update Label contextually
+        let label = "N:";
+        if (method === 'isolation') label = "Trees:";
+        if (method === 'lof' || method === 'knn') label = "k:";
+        $('label[for="charSimInput_n"]').text(label);
     }
 
     renderUniquenessList(items, isDescending) {
@@ -278,7 +493,7 @@ class UIManager {
             <div class="charSim-item" data-avatar="${item.avatar}">
                 <img src="${getThumbnailUrl('avatar', item.avatar)}" />
                 <span class="charSim-item-name">${item.name}</span>
-                <span class="charSim-item-score" title="Uniqueness Score">${item.distance.toFixed(4)}</span>
+                <span class="charSim-item-score" title="Score">${item.distance.toFixed(4)}</span>
             </div>
         `).join('');
         container.html(html);
@@ -381,22 +596,46 @@ class CharacterSimilarityExtension {
     runUniqueness() {
         if (this.embeddings.size === 0) return toastr.warning("Please load embeddings first.");
         
-        try {
-            // Note: Actual logic implementation for different methods is pending.
-            // Currently defaults to Global Mean Distance.
-            const results = ComputeEngine.computeUniqueness(this.embeddings);
-            
-            // Map names back
-            this.uniquenessData = results.map(r => {
-                const char = characters.find(c => c.avatar === r.avatar);
-                return char ? { ...r, name: char.name } : null;
-            }).filter(r => r);
+        this.ui.setLoading(true, "Calculating...");
+        
+        // Small timeout to allow UI to show loading toast
+        setTimeout(() => {
+            try {
+                const method = this.settings.uniquenessMethod;
+                const n = this.settings.uniquenessN || 20;
+                let results = [];
 
-            this.ui.renderUniquenessList(this.uniquenessData, $('#charSimBtn_sort').hasClass('fa-arrow-down'));
-            toastr.success("Uniqueness calculated.");
-        } catch (e) {
-            toastr.error("Error calculating uniqueness: " + e.message);
-        }
+                switch (method) {
+                    case 'isolation':
+                        results = ComputeEngine.computeIsolationForest(this.embeddings, n);
+                        break;
+                    case 'lof':
+                        results = ComputeEngine.computeLOF(this.embeddings, n);
+                        break;
+                    case 'knn':
+                        results = ComputeEngine.computeKNNUniqueness(this.embeddings, n);
+                        break;
+                    case 'mean':
+                    default:
+                        results = ComputeEngine.computeGlobalMeanUniqueness(this.embeddings);
+                        break;
+                }
+                
+                // Map names back
+                this.uniquenessData = results.map(r => {
+                    const char = characters.find(c => c.avatar === r.avatar);
+                    return char ? { ...r, name: char.name } : null;
+                }).filter(r => r);
+
+                this.ui.renderUniquenessList(this.uniquenessData, $('#charSimBtn_sort').hasClass('fa-arrow-down'));
+                toastr.success("Uniqueness calculated using " + method.toUpperCase());
+            } catch (e) {
+                toastr.error("Error calculating uniqueness: " + e.message);
+                console.error(e);
+            } finally {
+                this.ui.setLoading(false);
+            }
+        }, 50);
     }
 
     toggleSort() {
