@@ -793,6 +793,8 @@ class UIManager {
         this.elements = {};
         this.currentSimilarList = [];
         this.currentSimilarOffset = 0;
+        this.charSortMethod = 'name';
+        this.charSortOrder = 'asc';
     }
 
     /**
@@ -858,8 +860,19 @@ class UIManager {
                     </div>
 
                     <div id="charSimView_characters" class="charSim-view">
-                        <div class="charSim-search-bar">
-                             <input type="text" id="charSimInput_filter" class="text_pole" placeholder="Filter characters..." />
+                        <div class="charSim-controls">
+                            <input type="text" id="charSimInput_filter" class="text_pole" placeholder="Filter characters..." style="flex-grow:1; max-width: 200px;" />
+                            <div class="charSim-spacer"></div>
+                            
+                            <label style="margin-right: 5px;">Sort by:</label>
+                            <select id="charSimSelect_charSort" class="text_pole charSim-select">
+                                <option value="name">Name</option>
+                                <option value="uniqueness">Uniqueness</option>
+                                <option value="tokens">Tokens (Est.)</option>
+                                <option value="rating">Rating</option>
+                            </select>
+                            
+                            <div id="charSimBtn_charSortDir" class="menu_button menu_button_icon fa-solid fa-arrow-down" title="Toggle Order"></div>
                         </div>
                         <div id="charSimList_characters" class="charSim-list charSim-grid-container">
                             <!-- Grid Items Injected Here -->
@@ -908,10 +921,22 @@ class UIManager {
             $(`#charSimView_${tab}`).addClass('active');
         });
 
-        // Sort
+        // Uniqueness Sort
         $('#charSimBtn_sort').on('click', (e) => {
             $(e.currentTarget).toggleClass('fa-arrow-down fa-arrow-up');
             this.ext.toggleSort();
+        });
+
+        // Characters Sort
+        $('#charSimSelect_charSort').on('change', (e) => {
+            this.charSortMethod = e.target.value;
+            this.ext.populateLists();
+        });
+
+        $('#charSimBtn_charSortDir').on('click', (e) => {
+            $(e.currentTarget).toggleClass('fa-arrow-down fa-arrow-up');
+            this.charSortOrder = $(e.currentTarget).hasClass('fa-arrow-down') ? 'asc' : 'desc';
+            this.ext.populateLists();
         });
 
         // Dropdown & Params (Trigger Recalc)
@@ -1006,6 +1031,8 @@ class UIManager {
             
             // Show reset button
             $('#charSimRatingReset').show();
+            // Refresh list to update grid star view
+            this.ext.populateLists();
         });
 
         // Reset Rating
@@ -1023,6 +1050,8 @@ class UIManager {
             
             this.renderStars($('.charSim-rating-container'), value, isPredicted);
             $(e.currentTarget).hide();
+            // Refresh list to update grid star view
+            this.ext.populateLists();
         });
     }
 
@@ -1062,14 +1091,38 @@ class UIManager {
             return;
         }
 
-        const html = charList.map(c => `
+        const html = charList.map(c => {
+            const rating = c.rating || 0;
+            const isPredicted = c.isPredicted;
+            
+            // Create mini star HTML string
+            let starHtml = '';
+            for (let i = 0; i < 5; i++) {
+                const diff = rating - i;
+                const color = isPredicted ? '#89CFF0' : '#ffd700';
+                const emptyColor = '#4a4a4a';
+                let style = `color: ${emptyColor};`;
+                
+                if (diff >= 1) {
+                    style = `color: ${color};`;
+                } else if (diff > 0) {
+                    const percent = diff * 100;
+                    style = `background: linear-gradient(90deg, ${color} ${percent}%, ${emptyColor} ${percent}%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; color: transparent; text-shadow: none; -webkit-text-stroke: 0;`;
+                }
+                
+                starHtml += `<i class="fa-solid fa-star" style="${style}"></i>`;
+            }
+
+            return `
             <div class="charSim-grid-card" title="${c.name}" data-avatar="${c.avatar}">
                 <div class="charSim-card-img-wrapper">
                     <img src="${getThumbnailUrl('avatar', c.avatar)}" loading="lazy" />
                 </div>
                 <div class="charSim-card-name">${c.name}</div>
-            </div>
-        `).join('');
+                <div class="charSim-grid-stars">${starHtml}</div>
+            </div>`;
+        }).join('');
+        
         container.html(html);
     }
 
@@ -1287,6 +1340,56 @@ class CharacterSimilarityExtension {
         this.updatePredictions(); // Retrain on change
     }
 
+    getSortedCharacters() {
+        // Prepare list with necessary sort properties
+        const charList = characters.map(c => {
+            // Uniqueness
+            const uItem = this.uniquenessData.find(u => u.avatar === c.avatar);
+            const score = uItem ? uItem.distance : 0;
+            
+            // Rating (Manual or Predicted)
+            let rating = this.getRating(c.avatar);
+            let isPredicted = false;
+            if (rating === 0 && this.predictedRatings.has(c.avatar)) {
+                rating = this.predictedRatings.get(c.avatar);
+                isPredicted = true;
+            }
+
+            // Tokens (Proxy: Text Length)
+            const text = FIELDS_TO_EMBED.map(f => c[f] || '').join('\n').trim();
+            const tokenProxy = text.length;
+
+            return {
+                ...c,
+                uniquenessScore: score,
+                rating: rating,
+                isPredicted: isPredicted,
+                tokenCount: tokenProxy
+            };
+        });
+
+        const sortMethod = this.ui.charSortMethod;
+        const sortOrder = this.ui.charSortOrder;
+        const mult = sortOrder === 'asc' ? 1 : -1;
+
+        charList.sort((a, b) => {
+            if (sortMethod === 'name') {
+                return a.name.localeCompare(b.name) * mult;
+            } else if (sortMethod === 'uniqueness') {
+                return (a.uniquenessScore - b.uniquenessScore) * mult;
+            } else if (sortMethod === 'tokens') {
+                return (a.tokenCount - b.tokenCount) * mult;
+            } else if (sortMethod === 'rating') {
+                // For rating, usually higher is better, so 'desc' should be default conceptual sort.
+                // But following the arrow logic:
+                return (a.rating - b.rating) * mult;
+            }
+            return 0;
+        });
+
+        return charList;
+    }
+
     populateLists() {
         if (this.uniquenessData.length === 0) {
             const simpleList = characters.map(c => ({ 
@@ -1298,7 +1401,10 @@ class CharacterSimilarityExtension {
         } else {
             this.ui.renderUniquenessList(this.uniquenessData, $('#charSimBtn_sort').hasClass('fa-arrow-down'));
         }
-        this.ui.renderCharacterGrid(characters);
+        
+        // Render characters with current sort state
+        const sortedChars = this.getSortedCharacters();
+        this.ui.renderCharacterGrid(sortedChars);
     }
 
     async onOpenPanel() {
@@ -1414,6 +1520,7 @@ class CharacterSimilarityExtension {
 
                 this.uniquenessData = finalResults;
                 this.ui.renderUniquenessList(this.uniquenessData, $('#charSimBtn_sort').hasClass('fa-arrow-down'));
+                this.populateLists(); // Trigger re-sort of char list to update counts if needed
                 
                 toastr.success(`Calculated using ${modelCount} model(s).`);
 
@@ -1437,6 +1544,7 @@ class CharacterSimilarityExtension {
             }
 
             this.predictedRatings = ComputeEngine.computePredictedRatings(embeddingMap, ratingsMap);
+            this.populateLists(); // Refresh grid to show new predictions
         }, 50);
     }
 

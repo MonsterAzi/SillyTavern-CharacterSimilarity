@@ -200,7 +200,7 @@
     border-radius: 8px;
     padding: 10px;
     
-    height: 190px;
+    height: 215px; /* Increased height for stars */
     width: 100%;
     box-sizing: border-box;
 
@@ -242,6 +242,21 @@
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     line-height: 1.2;
+}
+
+/* Mini stars in grid */
+.charSim-grid-stars {
+    display: flex;
+    gap: 2px;
+    margin-top: 5px;
+    font-size: 0.8em;
+    justify-content: center;
+    width: 100%;
+}
+
+.charSim-grid-stars i {
+    text-shadow: none !important;
+    -webkit-text-stroke: 0;
 }
 
 /* Character Details View */
