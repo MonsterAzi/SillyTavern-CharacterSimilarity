@@ -924,12 +924,16 @@ class UIManager {
 
                     <div id="charSimView_characters" class="charSim-view">
                         <div class="charSim-controls">
-                            <input type="text" id="charSimInput_filter" class="text_pole" placeholder="Filter characters..." style="flex-grow:1; max-width: 200px;" />
+                            <div style="display: flex; gap: 5px; max-width: 250px;">
+                                <input type="text" id="charSimInput_filter" class="text_pole" placeholder="Search characters..." style="flex-grow:1;" />
+                                <div id="charSimBtn_search" class="menu_button menu_button_icon fa-solid fa-magnifying-glass" title="Search characters"></div>
+                                <div id="charSimBtn_clearSearch" class="menu_button menu_button_icon fa-solid fa-xmark" title="Clear Search" style="display:none;"></div>
+                            </div>
                             <div class="charSim-spacer"></div>
                             
                             <label style="margin-right: 5px;">Sort by:</label>
                             <select id="charSimSelect_charSort" class="text_pole charSim-select">
-                                <option value="name">Name</option>
+                                <option value="name">Name / Search Rank</option>
                                 <option value="uniqueness">Uniqueness</option>
                                 <option value="tokens">Tokens (Est.)</option>
                                 <option value="rating">Rating</option>
@@ -1016,13 +1020,20 @@ class UIManager {
             this.ext.runUniqueness();
         });
 
-        // Filter Characters
-        $('#charSimInput_filter').on('input', (e) => {
-            const term = e.target.value.toLowerCase();
-            $('.charSim-grid-card').each(function() {
-                const name = $(this).find('.charSim-card-name').text().toLowerCase();
-                $(this).toggle(name.includes(term));
-            });
+        // Filter Characters (MODIFIED TO USE SEARCH BUTTON)
+        $('#charSimBtn_search').on('click', () => this.ext.runSearch($('#charSimInput_filter').val()));
+        
+        $('#charSimInput_filter').on('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault(); 
+                this.ext.runSearch(e.target.value);
+            }
+        });
+        
+        $('#charSimBtn_clearSearch').on('click', () => {
+            $('#charSimInput_filter').val('');
+            $('#charSimBtn_clearSearch').hide();
+            this.ext.clearSearch(); 
         });
 
         // Details View Navigation (Delegated listener for Grid & Similar list)
@@ -1154,7 +1165,12 @@ class UIManager {
     renderCharacterGrid(charList) {
         const container = $('#charSimList_characters');
         if (!charList || charList.length === 0) {
-            container.html(this.createEmptyState("No characters found."));
+            // Check if filtering is active
+            if (this.ext.currentFilterResults) {
+                container.html(this.createEmptyState("No characters match the search criteria."));
+            } else {
+                container.html(this.createEmptyState("No characters found."));
+            }
             return;
         }
 
@@ -1376,6 +1392,7 @@ class CharacterSimilarityExtension {
         this.validCaches = []; 
         this.uniquenessData = [];
         this.predictedRatings = new Map(); // Store predicted ratings here
+        this.currentFilterResults = null; // Stores an array of avatar IDs ordered by search rank
         this.isProcessing = false;
         
         this.service = new SimilarityService(this.settings);
@@ -1408,16 +1425,16 @@ class CharacterSimilarityExtension {
     }
 
     getSortedCharacters() {
-        // Prepare list with necessary sort properties
+        // 1. Map all characters to include calculated metrics
         const charList = characters.map(c => {
             // Uniqueness
             const uItem = this.uniquenessData.find(u => u.avatar === c.avatar);
-            const score = uItem ? uItem.distance : 0;
+            const uniquenessScore = uItem ? uItem.distance : 0;
             
             // Rating (Manual or Predicted)
             let rating = this.getRating(c.avatar);
             let isPredicted = false;
-            let confidenceWidth = 0; // Default max confidence (width 0) for manual
+            let confidenceWidth = 0; 
 
             if (rating === 0 && this.predictedRatings.has(c.avatar)) {
                 const p = this.predictedRatings.get(c.avatar);
@@ -1428,23 +1445,42 @@ class CharacterSimilarityExtension {
 
             // Tokens (Proxy: Text Length)
             const text = FIELDS_TO_EMBED.map(f => c[f] || '').join('\n').trim();
-            const tokenProxy = text.length;
+            const tokenCount = text.length;
 
             return {
                 ...c,
-                uniquenessScore: score,
-                rating: rating,
-                isPredicted: isPredicted,
-                confidenceWidth: confidenceWidth,
-                tokenCount: tokenProxy
+                uniquenessScore,
+                rating,
+                isPredicted,
+                confidenceWidth,
+                tokenCount
             };
         });
 
+        let filteredList = charList;
+
+        // 2. Apply search filter if active
+        if (this.currentFilterResults) {
+            const filterSet = new Set(this.currentFilterResults);
+            filteredList = charList.filter(c => filterSet.has(c.avatar));
+            
+            // If sorting by name, prioritize search rank (which is the order in currentFilterResults)
+            if (this.ui.charSortMethod === 'name') {
+                 filteredList.sort((a, b) => {
+                    const idxA = this.currentFilterResults.indexOf(a.avatar);
+                    const idxB = this.currentFilterResults.indexOf(b.avatar);
+                    return idxA - idxB;
+                 });
+                 return filteredList; // Search rank is the primary sort order
+            }
+        }
+
+        // 3. Apply standard sorting
         const sortMethod = this.ui.charSortMethod;
         const sortOrder = this.ui.charSortOrder;
         const mult = sortOrder === 'asc' ? 1 : -1;
 
-        charList.sort((a, b) => {
+        filteredList.sort((a, b) => {
             if (sortMethod === 'name') {
                 return a.name.localeCompare(b.name) * mult;
             } else if (sortMethod === 'uniqueness') {
@@ -1454,14 +1490,12 @@ class CharacterSimilarityExtension {
             } else if (sortMethod === 'rating') {
                 return (a.rating - b.rating) * mult;
             } else if (sortMethod === 'confidence') {
-                // Lower width = Higher confidence
-                // Manual ratings (width 0) come first in ASC
                 return (a.confidenceWidth - b.confidenceWidth) * mult;
             }
             return 0;
         });
 
-        return charList;
+        return filteredList;
     }
 
     populateLists() {
@@ -1510,7 +1544,9 @@ class CharacterSimilarityExtension {
             this.validCaches = this.service.getValidCaches(this.dataItems);
 
             if(this.validCaches.length === 0) {
-                throw new Error("No valid embedding caches available.");
+                // If we failed to get a live cache, we rely on the user to fix the Kobold URL
+                // We don't throw an error here but let the rest proceed with empty caches.
+                console.warn("No valid embedding caches available.");
             }
             
             this.runUniqueness();
@@ -1527,6 +1563,111 @@ class CharacterSimilarityExtension {
     clearCache() {
         this.service.clearCache();
     }
+
+    // --- Search Logic ---
+
+    clearSearch() {
+        this.currentFilterResults = null;
+        this.populateLists();
+        $('#charSimBtn_clearSearch').hide();
+    }
+    
+    async runSearch(searchTerm) {
+        searchTerm = searchTerm.trim();
+        
+        if (!searchTerm) {
+            this.clearSearch();
+            return;
+        }
+        
+        $('#charSimBtn_clearSearch').show();
+        toastr.info(`Searching for "${searchTerm}"...`, "Similarity Search");
+
+        try {
+            const liveEmbeddings = this.service.getLiveEmbeddings();
+            const searchTermLower = searchTerm.toLowerCase();
+            const combinedScores = new Map();
+            let queryVector = null;
+            let embeddingSearchAttempted = false;
+
+            // --- 2. Embedding Search (Similarity Match) ---
+            if (liveEmbeddings.size >= 2) {
+                embeddingSearchAttempted = true;
+                const url = this.service.koboldUrl;
+                if (url) {
+                    const response = await fetch('/api/backends/kobold/embed', {
+                        method: 'POST',
+                        headers: getRequestHeaders(),
+                        body: JSON.stringify({
+                            items: [searchTerm],
+                            server: url,
+                        }),
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        queryVector = data.embeddings && data.embeddings.length > 0 ? data.embeddings[0] : null;
+                    }
+                }
+            }
+            
+            if (queryVector) {
+                for (const [avatar, charVector] of liveEmbeddings.entries()) {
+                    const similarity = ComputeEngine.calculateCosineSimilarity(queryVector, charVector);
+                    combinedScores.set(avatar, similarity);
+                }
+            } else if (embeddingSearchAttempted) {
+                 toastr.warning("Embedding search failed or model cache incomplete. Running fuzzy search only.", "Similarity Search");
+            }
+            
+            // --- 1. Fuzzy Search (Text Match) & Merge ---
+            for (const char of characters) {
+                const text = FIELDS_TO_EMBED.map(f => char[f] || '').join(' ').toLowerCase();
+                let fuzzyScore = 0;
+                
+                if (char.name.toLowerCase().includes(searchTermLower)) {
+                    fuzzyScore = 1.0;
+                } else if (text.includes(searchTermLower)) {
+                    fuzzyScore = 0.5;
+                }
+                
+                if (fuzzyScore > 0 || combinedScores.has(char.avatar)) {
+                    const currentSimScore = combinedScores.get(char.avatar) || 0;
+                    // Combine score: Similarity (0-1) + Fuzzy Boost (0-1)
+                    combinedScores.set(char.avatar, currentSimScore + fuzzyScore); 
+                }
+            }
+
+            // Convert map back to list and calculate final search rank
+            let finalResults = [];
+            for (const [avatar, combinedScore] of combinedScores.entries()) {
+                // Keep only results above a low relevance threshold (0.45 chosen to capture all 0.5 fuzzy matches or strong embedding matches)
+                if (combinedScore > 0.45) { 
+                     finalResults.push({ avatar, score: combinedScore });
+                }
+            }
+
+            // Sort by combined score descending
+            finalResults.sort((a, b) => b.score - a.score);
+            
+            // Store just the avatar list for filtering
+            this.currentFilterResults = finalResults.map(r => r.avatar);
+            
+            this.populateLists();
+            
+            if (finalResults.length === 0) {
+                 toastr.warning(`Search finished. Found 0 relevant characters for "${searchTerm}".`, "Similarity Search");
+            } else {
+                 toastr.success(`Search finished. Found ${finalResults.length} relevant characters.`, "Similarity Search");
+            }
+
+        } catch (e) {
+            toastr.error(e.message, "Search Failed");
+            console.error("Search failed:", e);
+            this.clearSearch();
+        }
+    }
+
 
     runUniqueness() {
         if (this.validCaches.length === 0) return;
@@ -1596,7 +1737,7 @@ class CharacterSimilarityExtension {
                 this.ui.renderUniquenessList(this.uniquenessData, $('#charSimBtn_sort').hasClass('fa-arrow-down'));
                 this.populateLists(); // Trigger re-sort of char list to update counts if needed
                 
-                toastr.success(`Calculated using ${modelCount} model(s).`);
+                toastr.success(`Calculated uniqueness using ${modelCount} model(s).`);
 
             } catch (e) {
                 toastr.error("Error calculating uniqueness: " + e.message);
