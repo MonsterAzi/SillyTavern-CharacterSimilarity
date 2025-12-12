@@ -109,7 +109,6 @@ class ComputeEngine {
 
     /**
      * Algorithm 1: Global Mean Distance
-     * Simple distance from the centroid of the entire library.
      */
     static computeGlobalMeanUniqueness(embeddingMap) {
         const vectors = Array.from(embeddingMap.values());
@@ -126,8 +125,6 @@ class ComputeEngine {
 
     /**
      * Algorithm 2: k-Nearest Neighbors (kNN) Outlier Score
-     * Score is the average distance to the k nearest neighbors.
-     * Higher score = more isolated (unique).
      */
     static computeKNNUniqueness(embeddingMap, k) {
         const entries = Array.from(embeddingMap.entries()); // [[avatar, vec], ...]
@@ -157,8 +154,6 @@ class ComputeEngine {
 
     /**
      * Algorithm 3: Local Outlier Factor (LOF)
-     * Compares local density of a point to local density of its neighbors.
-     * Score > 1 implies outlier.
      */
     static computeLOF(embeddingMap, k) {
         const entries = Array.from(embeddingMap.entries());
@@ -227,7 +222,6 @@ class ComputeEngine {
 
     /**
      * Algorithm 4: Isolation Forest
-     * Randomly partitions data. Outliers are isolated in fewer steps.
      */
     static computeIsolationForest(embeddingMap, nTrees = 100) {
         const entries = Array.from(embeddingMap.entries());
@@ -298,8 +292,7 @@ class ComputeEngine {
     }
 
     /**
-     * Algorithm 5: ECOD (Empirical Cumulative Distribution Functions for Outlier Detection)
-     * Parameter-free. Estimates tail probabilities for each dimension.
+     * Algorithm 5: ECOD
      */
     static computeECOD(embeddingMap) {
         const entries = Array.from(embeddingMap.entries());
@@ -338,8 +331,7 @@ class ComputeEngine {
     }
 
     /**
-     * Algorithm 6: HBOS (Histogram-based Outlier Score)
-     * Assumes feature independence. Uses dynamic binning (Birge-Rozenblac/Scott's Rule).
+     * Algorithm 6: HBOS
      */
     static computeHBOS(embeddingMap) {
         const entries = Array.from(embeddingMap.entries());
@@ -351,7 +343,6 @@ class ComputeEngine {
         const scores = new Float32Array(n).fill(0);
 
         for (let d = 0; d < dim; d++) {
-            // 1. Extract Column and Stats
             let min = Infinity, max = -Infinity;
             const col = new Float32Array(n);
             let sum = 0;
@@ -369,8 +360,6 @@ class ComputeEngine {
             for(let x of col) sqDiff += (x - mean) * (x - mean);
             const std = Math.sqrt(sqDiff / n);
 
-            // 2. Determine Bin Count (Scott's Rule / Birge-Rozenblac Proxy)
-            // k = (max - min) / (3.5 * std * n^(-1/3))
             let binCount = 10; 
             if (std > 0) {
                 const binWidth = (3.5 * std) / Math.pow(n, 1/3);
@@ -378,10 +367,8 @@ class ComputeEngine {
                     binCount = Math.ceil((max - min) / binWidth);
                 }
             }
-            // Clamp safe limits
             binCount = Math.max(5, Math.min(binCount, Math.floor(n), 50));
             
-            // 3. Build Histogram
             const hist = new Int32Array(binCount).fill(0);
             const range = max - min;
             const step = range / binCount;
@@ -393,10 +380,9 @@ class ComputeEngine {
                     hist[binIdx]++;
                 }
             } else {
-                hist[0] = n; // All same values
+                hist[0] = n;
             }
 
-            // 4. Calculate Score: Sum of Log(1/density) -> Sum of Log(n/count)
             for(let i=0; i<n; i++) {
                 let binIdx = 0;
                 if (step > 0) {
@@ -408,7 +394,6 @@ class ComputeEngine {
                 if (count > 0) {
                     scores[i] += Math.log(n / count);
                 } else {
-                    // Penalty for theoretically impossible empty bin hit
                     scores[i] += Math.log(n); 
                 }
             }
@@ -417,6 +402,140 @@ class ComputeEngine {
         const results = [];
         for (let i = 0; i < n; i++) {
             results.push({ avatar: entries[i][0], distance: scores[i] });
+        }
+        return results;
+    }
+
+    /**
+     * Algorithm 7: LUNAR (Local Outlier Detection via Graph Neural Networks)
+     * Implementation: Uses a lightweight Neural Network trained on the fly
+     * to distinguish between Real KNN Distances and Negative Sample KNN Distances.
+     */
+    static computeLUNAR(embeddingMap, k) {
+        const entries = Array.from(embeddingMap.entries()); // [[avatar, vec], ...]
+        const realData = entries.map(e => e[1]);
+        const n = realData.length;
+        if (n < 2) return [];
+
+        const dim = realData[0].length;
+        const neighborCount = Math.max(1, Math.min(k, n - 1));
+
+        // 1. Generate Negative Samples (Gaussian noise around real data)
+        const negativeData = [];
+        // Calculate std dev for noise scale
+        let varianceSum = 0;
+        for(let i=0; i<n; i++) {
+            for(let j=0; j<dim; j++) varianceSum += realData[i][j]*realData[i][j];
+        }
+        const noiseScale = 0.1; // Epsilon parameter
+
+        for(let i=0; i<n; i++) {
+            const noise = new Float32Array(dim);
+            for(let d=0; d<dim; d++) {
+                // Approximate Gaussian: sum of 3 uniform randoms
+                const g = (Math.random() + Math.random() + Math.random() - 1.5) * 2; 
+                noise[d] = realData[i][d] + (g * noiseScale);
+            }
+            negativeData.push(noise);
+        }
+
+        // 2. Compute Distances to K-Nearest Real Neighbors
+        // For Real points -> distance to other real points
+        // For Neg points -> distance to real points
+        const getKNN = (queryPoint, isRealIndex) => {
+            const dists = [];
+            for(let i=0; i<n; i++) {
+                if(isRealIndex === i) continue; // Don't match self
+                dists.push(this.calculateEuclideanDistance(queryPoint, realData[i]));
+            }
+            dists.sort((a,b) => a - b);
+            return dists.slice(0, neighborCount);
+        };
+
+        const X_real = []; // Features for real data
+        for(let i=0; i<n; i++) X_real.push(getKNN(realData[i], i));
+
+        const X_neg = []; // Features for negative data
+        for(let i=0; i<n; i++) X_neg.push(getKNN(negativeData[i], -1));
+
+        // 3. Mini Neural Network Training (Tiny MLP in pure JS)
+        // Architecture: Input(k) -> Dense(16, ReLU) -> Dense(1, Sigmoid)
+        const hiddenSize = 16;
+        const learningRate = 0.1;
+        const epochs = 50;
+
+        // Weights
+        const W1 = new Float32Array(neighborCount * hiddenSize).map(() => Math.random() * 0.2 - 0.1);
+        const b1 = new Float32Array(hiddenSize).fill(0);
+        const W2 = new Float32Array(hiddenSize).map(() => Math.random() * 0.2 - 0.1);
+        let b2 = 0;
+
+        // Helper: Forward Pass
+        const forward = (input) => {
+            // Layer 1
+            const h = new Float32Array(hiddenSize);
+            for(let i=0; i<hiddenSize; i++) {
+                let sum = b1[i];
+                for(let j=0; j<neighborCount; j++) {
+                    sum += input[j] * W1[j*hiddenSize + i];
+                }
+                h[i] = sum > 0 ? sum : 0; // ReLU
+            }
+            // Layer 2
+            let z = b2;
+            for(let i=0; i<hiddenSize; i++) {
+                z += h[i] * W2[i];
+            }
+            const pred = 1 / (1 + Math.exp(-z)); // Sigmoid
+            return { h, pred };
+        };
+
+        // Training Loop (SGD)
+        // Label 0 for Real, 1 for Negative (Outlier)
+        for(let epoch=0; epoch<epochs; epoch++) {
+            // Shuffle
+            const indices = [];
+            for(let i=0; i<n*2; i++) indices.push(i);
+            indices.sort(() => Math.random() - 0.5);
+
+            for(const idx of indices) {
+                const isReal = idx < n;
+                const features = isReal ? X_real[idx] : X_neg[idx - n];
+                const target = isReal ? 0 : 1;
+
+                const { h, pred } = forward(features);
+                
+                // Backprop (MSE Loss derivative w.r.t logits implies: (pred - target) * pred * (1-pred))
+                // Or simplified CrossEntropy? Let's use simple error signal.
+                const error = pred - target; // Derivative of MSE with Sigmoid
+                const gradOut = error * (pred * (1 - pred)); // Sigmoid derivative
+
+                // Update W2, b2
+                for(let i=0; i<hiddenSize; i++) {
+                    const grad = gradOut * h[i];
+                    W2[i] -= learningRate * grad;
+                }
+                b2 -= learningRate * gradOut;
+
+                // Update W1, b1
+                for(let i=0; i<hiddenSize; i++) {
+                    const gradH = gradOut * W2[i];
+                    const gradReLU = h[i] > 0 ? 1 : 0;
+                    const gradLayer1 = gradH * gradReLU;
+                    
+                    b1[i] -= learningRate * gradLayer1;
+                    for(let j=0; j<neighborCount; j++) {
+                        W1[j*hiddenSize + i] -= learningRate * gradLayer1 * features[j];
+                    }
+                }
+            }
+        }
+
+        // 4. Inference
+        const results = [];
+        for(let i=0; i<n; i++) {
+            const { pred } = forward(X_real[i]);
+            results.push({ avatar: entries[i][0], distance: pred });
         }
         return results;
     }
@@ -469,6 +588,7 @@ class UIManager {
                             
                             <select id="charSimSelect_method" class="text_pole charSim-select">
                                 <option value="mean">Global Mean Distance</option>
+                                <option value="lunar">LUNAR (GNN)</option>
                                 <option value="hbos">HBOS (Birgé-Rozenblac)</option>
                                 <option value="ecod">ECOD (Parameter-free)</option>
                                 <option value="isolation">Isolation Forest</option>
@@ -566,13 +686,13 @@ class UIManager {
     }
 
     toggleParamInput(method) {
-        const show = ['isolation', 'lof', 'knn'].includes(method);
+        const show = ['isolation', 'lof', 'knn', 'lunar'].includes(method);
         $('#charSim_param_container').css('display', show ? 'flex' : 'none');
         
         // Update Label contextually
         let label = "N:";
         if (method === 'isolation') label = "Trees:";
-        if (method === 'lof' || method === 'knn') label = "k:";
+        if (method === 'lof' || method === 'knn' || method === 'lunar') label = "k:";
         $('label[for="charSimInput_n"]').text(label);
     }
 
@@ -702,6 +822,9 @@ class CharacterSimilarityExtension {
                 let results = [];
 
                 switch (method) {
+                    case 'lunar':
+                        results = ComputeEngine.computeLUNAR(this.embeddings, n);
+                        break;
                     case 'hbos':
                         results = ComputeEngine.computeHBOS(this.embeddings);
                         break;
