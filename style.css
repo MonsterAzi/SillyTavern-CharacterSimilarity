@@ -316,6 +316,20 @@
     line-height: 1.5;
 }
 
+/* Rating Stars */
+.charSim-rating-container {
+    display: inline-flex;
+    gap: 5px;
+    margin: 10px 0;
+    cursor: pointer;
+    font-size: 1.5em;
+    color: #ffd700; 
+}
+
+.charSim-rating-container i.fa-regular {
+    color: #ccc;
+}
+
 /* Similar Characters Horizontal List */
 .charSim-similar-list {
     display: flex;

@@ -12,6 +12,7 @@ import {
 // --- Constants & Config ---
 const EXTENSION_NAME = "character_similarity";
 const CACHE_KEY = "character_similarity_cache";
+const RATINGS_KEY = "character_similarity_ratings"; // New key for ratings
 const DEFAULT_SETTINGS = {
     koboldUrl: 'http://127.0.0.1:5001',
     uniquenessMethod: 'mean',
@@ -270,6 +271,7 @@ class ComputeEngine {
 
         const results = [];
         for (const [avatar, vec] of embeddingMap.entries()) {
+            // Using Cosine Distance for uniqueness calculation
             const distance = this.calculateCosineDistance(vec, mean);
             results.push({ avatar, distance });
         }
@@ -288,6 +290,7 @@ class ComputeEngine {
 
             for (let j = 0; j < n; j++) {
                 if (i === j) continue;
+                // Cosine Distance
                 const d = this.calculateCosineDistance(currentVec, entries[j][1]);
                 distances.push(d);
             }
@@ -313,6 +316,7 @@ class ComputeEngine {
             const dists = [];
             for (let j = 0; j < n; j++) {
                 if (i === j) continue;
+                // Cosine Distance
                 dists.push({ idx: j, dist: this.calculateCosineDistance(vecA, entries[j][1]) });
             }
             dists.sort((a, b) => a.dist - b.dist);
@@ -841,6 +845,41 @@ class UIManager {
                  icon.removeClass('fa-eye-slash').addClass('fa-eye');
              }
         });
+
+        // Rating Star Interactions (Delegated)
+        $('#characterSimilarityPanel').on('mousemove', '.charSim-rating-container', (e) => {
+            const container = $(e.currentTarget);
+            const width = container.width() / 5;
+            const x = e.offsetX;
+            const starIndex = Math.floor(x / width);
+            const relativeX = x % width;
+            let value = starIndex + (relativeX < width / 2 ? 0.5 : 1.0);
+            if(value > 5) value = 5;
+            if(value < 0.5) value = 0.5;
+            this.renderStars(container, value);
+        });
+
+        $('#characterSimilarityPanel').on('mouseleave', '.charSim-rating-container', (e) => {
+            const container = $(e.currentTarget);
+            const avatar = container.data('avatar');
+            const savedValue = this.ext.getRating(avatar);
+            this.renderStars(container, savedValue);
+        });
+
+        $('#characterSimilarityPanel').on('click', '.charSim-rating-container', (e) => {
+            const container = $(e.currentTarget);
+            const width = container.width() / 5;
+            const x = e.offsetX;
+            const starIndex = Math.floor(x / width);
+            const relativeX = x % width;
+            let value = starIndex + (relativeX < width / 2 ? 0.5 : 1.0);
+            if(value > 5) value = 5;
+            if(value < 0.5) value = 0.5;
+            
+            const avatar = container.data('avatar');
+            this.ext.setRating(avatar, value);
+            this.renderStars(container, value);
+        });
     }
 
     toggleParamInput(method) {
@@ -902,6 +941,8 @@ class UIManager {
         const scenario = char.scenario || "";
         const firstMes = char.first_mes || "";
         const mesEx = char.mes_example || "";
+        
+        const currentRating = this.ext.getRating(avatar);
 
         // Reset similar list state
         this.currentSimilarList = this.ext.getSimilarCharacters(avatar);
@@ -912,6 +953,13 @@ class UIManager {
                 <img src="${getThumbnailUrl('avatar', avatar)}" class="charSim-details-img">
                 <div class="charSim-details-info">
                     <h1>${char.name}</h1>
+                    <div class="charSim-rating-container" data-avatar="${avatar}">
+                        <i class="fa-regular fa-star"></i>
+                        <i class="fa-regular fa-star"></i>
+                        <i class="fa-regular fa-star"></i>
+                        <i class="fa-regular fa-star"></i>
+                        <i class="fa-regular fa-star"></i>
+                    </div>
                     <div class="charSim-creator-notes">${creatorNotes}</div>
                 </div>
             </div>
@@ -951,6 +999,9 @@ class UIManager {
 
         container.html(html);
         
+        // Initial star render
+        this.renderStars($('.charSim-rating-container'), currentRating);
+
         // Initial load of similar items
         this.loadNextSimilarBatch();
 
@@ -967,6 +1018,22 @@ class UIManager {
         $('#charSimView_details').addClass('active');
     }
 
+    renderStars(container, value) {
+        const stars = container.find('i');
+        stars.each((index, el) => {
+            const star = $(el);
+            star.removeClass('fa-solid fa-regular fa-star fa-star-half-stroke').addClass('fa-star'); // Reset to base
+            
+            if (value >= index + 1) {
+                star.addClass('fa-solid'); // Full
+            } else if (value > index) {
+                star.addClass('fa-solid fa-star-half-stroke'); // Half
+            } else {
+                star.addClass('fa-regular'); // Empty
+            }
+        });
+    }
+
     loadNextSimilarBatch() {
         if (this.currentSimilarOffset >= this.currentSimilarList.length) return;
 
@@ -980,7 +1047,6 @@ class UIManager {
 
         const html = batch.map(s => {
             const percent = Math.round(s.similarity * 100) + '%';
-            // Adjusted HTML structure to fix clipping: wrapper container holds image wrapper and badge
             return `
                 <div class="charSim-grid-card" title="${s.name}" data-avatar="${s.avatar}">
                     <div style="position: relative; margin-bottom: 10px;">
@@ -1026,6 +1092,17 @@ class CharacterSimilarityExtension {
 
     updateSetting(key, value) {
         this.settings[key] = value;
+        saveSettingsDebounced();
+    }
+
+    getRating(avatar) {
+        if (!extension_settings[RATINGS_KEY]) return 0;
+        return extension_settings[RATINGS_KEY][avatar] || 0;
+    }
+
+    setRating(avatar, value) {
+        if (!extension_settings[RATINGS_KEY]) extension_settings[RATINGS_KEY] = {};
+        extension_settings[RATINGS_KEY][avatar] = value;
         saveSettingsDebounced();
     }
 
