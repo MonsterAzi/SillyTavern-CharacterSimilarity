@@ -850,7 +850,11 @@ class UIManager {
         $('#characterSimilarityPanel').on('mousemove', '.charSim-rating-container', (e) => {
             const container = $(e.currentTarget);
             const width = container.width() / 5;
-            const x = e.offsetX;
+            // FIX: Use pageX and offset to get X relative to container, 
+            // because offsetX is relative to target (which might be the star icon)
+            const offset = container.offset();
+            const x = e.pageX - offset.left;
+            
             const starIndex = Math.floor(x / width);
             const relativeX = x % width;
             let value = starIndex + (relativeX < width / 2 ? 0.5 : 1.0);
@@ -869,7 +873,10 @@ class UIManager {
         $('#characterSimilarityPanel').on('click', '.charSim-rating-container', (e) => {
             const container = $(e.currentTarget);
             const width = container.width() / 5;
-            const x = e.offsetX;
+            // FIX: Use pageX and offset
+            const offset = container.offset();
+            const x = e.pageX - offset.left;
+
             const starIndex = Math.floor(x / width);
             const relativeX = x % width;
             let value = starIndex + (relativeX < width / 2 ? 0.5 : 1.0);
