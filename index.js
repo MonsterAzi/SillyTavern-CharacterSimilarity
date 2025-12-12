@@ -865,7 +865,7 @@ class UIManager {
 
         const container = $('.charSim-details-content');
         
-        const creatorNotes = char.creator_notes || "No creator notes available.";
+        const creatorNotes = char.creatorcomment || "No creator notes available.";
         const desc = char.description || "";
         const personality = char.personality || "";
         const scenario = char.scenario || "";
