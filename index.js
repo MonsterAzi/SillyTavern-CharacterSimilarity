@@ -7,10 +7,10 @@ import {
     eventSource, 
     event_types, 
     getRequestHeaders,
+    applyTagsOnCharacterSelect,
     selectCharacterById,
     setActiveCharacter,
-    setActiveGroup,
-    applyTagsOnCharacterSelect,
+    setActiveGroup
 } from "../../../../script.js";
 
 // --- Constants & Config ---
@@ -1098,17 +1098,26 @@ class UIManager {
              this.showCharacterDetails(actualAvatar);
         });
 
-        $('#characterSimilarityPanel').on('click', '.charSim-details-img', (e) => {
-            const avatar = $(e.currentTarget).data('avatar');
-            if (avatar) {
-                this.ext.loadCharacter(avatar);
-                $('#characterSimilarityPanel').removeClass('open');
-            }
-        });
-
         $('#charSimBtn_back').on('click', () => {
              $('#charSimView_details').removeClass('active');
              $('#charSimView_characters').addClass('active');
+        });
+
+        // Load Character from Details Header
+        $('#characterSimilarityPanel').on('click', '.charSim-details-img', (e) => {
+            const avatar = $(e.currentTarget).data('avatar');
+            const char = characters.find(c => c.avatar === avatar);
+            if (!char) return;
+
+            const id = String(characters.findIndex(it => it == char));
+            const tagWorkaround = document.createElement('div');
+            tagWorkaround.setAttribute('chid', id);
+            applyTagsOnCharacterSelect.call(tagWorkaround);
+            selectCharacterById(id);
+            setActiveCharacter(char.avatar);
+            setActiveGroup(null);
+            
+            $('#characterSimilarityPanel').removeClass('open');
         });
 
         // Details Toggle
@@ -1297,7 +1306,7 @@ class UIManager {
 
         const html = `
             <div class="charSim-details-header">
-                <img src="${getThumbnailUrl('avatar', avatar)}" class="charSim-details-img" data-avatar="${avatar}" title="Click to load character">
+                <img src="${getThumbnailUrl('avatar', avatar)}" class="charSim-details-img" data-avatar="${avatar}" style="cursor: pointer;" title="Click to load character">
                 <div class="charSim-details-info">
                     <h1>${char.name}</h1>
                     <div style="display:flex; align-items:center; gap: 10px;">
@@ -1480,28 +1489,6 @@ class CharacterSimilarityExtension {
         }
         saveSettingsDebounced();
         this.updatePredictions(); // Retrain on change
-    }
-
-    loadCharacter(avatar) {
-        const char = characters.find(c => c.avatar === avatar);
-        if (!char) {
-            toastr.error("Character not found.");
-            return;
-        }
-
-        const id = String(characters.findIndex(it => it === char));
-        if (id === '-1') {
-            toastr.error("Could not find character index.");
-            return;
-        }
-
-        const tagWorkaround = document.createElement('div');
-        tagWorkaround.setAttribute('chid', id);
-        applyTagsOnCharacterSelect.call(tagWorkaround);
-        selectCharacterById(id);
-        setActiveCharacter(char.avatar);
-        setActiveGroup(null);
-        toastr.success(`Loaded character: ${char.name}`);
     }
 
     async performSearch() {

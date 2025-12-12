@@ -282,7 +282,6 @@
     object-fit: cover;
     box-shadow: 0 5px 15px rgba(0,0,0,0.3);
     border: 2px solid var(--border-color);
-    cursor: pointer;
 }
 
 .charSim-details-info h1 {
