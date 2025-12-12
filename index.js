@@ -209,6 +209,34 @@ class SimilarityService {
         return map;
     }
 
+    /**
+     * Helper to get embeddings for a single text item
+     */
+    async getEmbeddingForText(text) {
+        const url = this.koboldUrl;
+        if (!url) throw new Error("KoboldCpp URL is not configured.");
+
+        const response = await fetch('/api/backends/kobold/embed', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                items: [text],
+                server: url,
+            }),
+        });
+
+        if (!response.ok) {
+            throw new Error(`Server returned status ${response.status}.`);
+        }
+
+        const data = await response.json();
+        if (!data.embeddings || data.embeddings.length === 0 || !data.embeddings[0]) {
+            throw new Error("Invalid response format from embedding server.");
+        }
+
+        return data.embeddings[0];
+    }
+    
     clearCache() {
         extension_settings[CACHE_KEY] = {};
         saveSettingsDebounced();
@@ -383,6 +411,36 @@ class GradientBoostingRegressor {
 class ComputeEngine {
     
     // --- Basic Math ---
+
+    static fuzzyMatch(pattern, text) {
+        pattern = pattern.toLowerCase();
+        text = text.toLowerCase();
+        let score = 0;
+        let patternIndex = 0;
+        let consecutiveBonus = 0;
+    
+        for (let i = 0; i < text.length && patternIndex < pattern.length; i++) {
+            if (text[i] === pattern[patternIndex]) {
+                score += 1 + consecutiveBonus;
+                consecutiveBonus++;
+                patternIndex++;
+            } else {
+                consecutiveBonus = 0;
+            }
+        }
+        
+        // if the whole pattern was found, add a bonus based on length ratio
+        if (patternIndex === pattern.length) {
+            if (pattern.length === text.length) {
+                score *= 1.5; // Perfect match bonus
+            }
+            score += Math.floor(10 * (pattern.length / text.length));
+        } else {
+            return 0; // no match if pattern wasn't fully found
+        }
+    
+        return score;
+    }
 
     static calculateMeanVector(vectors) {
         if (!vectors || vectors.length === 0) return null;
@@ -924,16 +982,13 @@ class UIManager {
 
                     <div id="charSimView_characters" class="charSim-view">
                         <div class="charSim-controls">
-                            <div style="display: flex; gap: 5px; max-width: 250px;">
-                                <input type="text" id="charSimInput_filter" class="text_pole" placeholder="Search characters..." style="flex-grow:1;" />
-                                <div id="charSimBtn_search" class="menu_button menu_button_icon fa-solid fa-magnifying-glass" title="Search characters"></div>
-                                <div id="charSimBtn_clearSearch" class="menu_button menu_button_icon fa-solid fa-xmark" title="Clear Search" style="display:none;"></div>
-                            </div>
+                            <div id="charSimBtn_search" class="menu_button menu_button_icon fa-solid fa-search" title="Search" style="margin-right: 5px;"></div>
+                            <input type="text" id="charSimInput_filter" class="text_pole" placeholder="Fuzzy & Semantic Search..." style="flex-grow:1; max-width: 200px;" />
                             <div class="charSim-spacer"></div>
                             
                             <label style="margin-right: 5px;">Sort by:</label>
                             <select id="charSimSelect_charSort" class="text_pole charSim-select">
-                                <option value="name">Name / Search Rank</option>
+                                <option value="name">Name</option>
                                 <option value="uniqueness">Uniqueness</option>
                                 <option value="tokens">Tokens (Est.)</option>
                                 <option value="rating">Rating</option>
@@ -1020,20 +1075,14 @@ class UIManager {
             this.ext.runUniqueness();
         });
 
-        // Filter Characters (MODIFIED TO USE SEARCH BUTTON)
-        $('#charSimBtn_search').on('click', () => this.ext.runSearch($('#charSimInput_filter').val()));
-        
+        // Character Search
+        const performSearch = () => this.ext.performSearch();
+        $('#charSimBtn_search').on('click', performSearch);
         $('#charSimInput_filter').on('keydown', (e) => {
             if (e.key === 'Enter') {
-                e.preventDefault(); 
-                this.ext.runSearch(e.target.value);
+                e.preventDefault();
+                performSearch();
             }
-        });
-        
-        $('#charSimBtn_clearSearch').on('click', () => {
-            $('#charSimInput_filter').val('');
-            $('#charSimBtn_clearSearch').hide();
-            this.ext.clearSearch(); 
         });
 
         // Details View Navigation (Delegated listener for Grid & Similar list)
@@ -1165,12 +1214,7 @@ class UIManager {
     renderCharacterGrid(charList) {
         const container = $('#charSimList_characters');
         if (!charList || charList.length === 0) {
-            // Check if filtering is active
-            if (this.ext.currentFilterResults) {
-                container.html(this.createEmptyState("No characters match the search criteria."));
-            } else {
-                container.html(this.createEmptyState("No characters found."));
-            }
+            container.html(this.createEmptyState("No characters found."));
             return;
         }
 
@@ -1392,7 +1436,6 @@ class CharacterSimilarityExtension {
         this.validCaches = []; 
         this.uniquenessData = [];
         this.predictedRatings = new Map(); // Store predicted ratings here
-        this.currentFilterResults = null; // Stores an array of avatar IDs ordered by search rank
         this.isProcessing = false;
         
         this.service = new SimilarityService(this.settings);
@@ -1424,17 +1467,92 @@ class CharacterSimilarityExtension {
         this.updatePredictions(); // Retrain on change
     }
 
+    async performSearch() {
+        const term = $('#charSimInput_filter').val().trim();
+    
+        if (!term) {
+            this.populateLists(); // Resets to default view
+            return;
+        }
+    
+        toastr.info(`Searching for "${term}"...`);
+    
+        try {
+            const liveEmbeddings = this.service.getLiveEmbeddings();
+            const useEmbeddings = liveEmbeddings.size > 0;
+            let termVector = null;
+    
+            if (useEmbeddings) {
+                termVector = await this.service.getEmbeddingForText(term);
+            } else {
+                toastr.warning("Live embedding cache is not ready. Falling back to name-only search.");
+            }
+    
+            let scoredChars = [];
+            let maxFuzzyScore = 1; // avoid division by zero
+    
+            for (const char of characters) {
+                const fuzzyScore = ComputeEngine.fuzzyMatch(term, char.name);
+                if (fuzzyScore > maxFuzzyScore) maxFuzzyScore = fuzzyScore;
+    
+                let embeddingScore = 0;
+                if (useEmbeddings && termVector) {
+                    const charVector = liveEmbeddings.get(char.avatar);
+                    if (charVector) {
+                        embeddingScore = ComputeEngine.calculateCosineSimilarity(termVector, charVector);
+                    }
+                }
+                
+                scoredChars.push({ char, fuzzyScore, embeddingScore });
+            }
+            
+            const finalResults = scoredChars.map(item => {
+                const normalizedFuzzy = item.fuzzyScore / maxFuzzyScore;
+                const normalizedEmbedding = useEmbeddings ? (item.embeddingScore + 1) / 2 : 0;
+                
+                const combinedScore = useEmbeddings
+                    ? (0.3 * normalizedFuzzy) + (0.7 * normalizedEmbedding)
+                    : normalizedFuzzy; // Only fuzzy if no embeddings
+                
+                // Add required properties for rendering
+                let rating = this.getRating(item.char.avatar);
+                let isPredicted = false;
+                if (rating === 0 && this.predictedRatings.has(item.char.avatar)) {
+                    const p = this.predictedRatings.get(item.char.avatar);
+                    rating = p.score;
+                    isPredicted = true;
+                }
+                
+                return {
+                    ...item.char,
+                    combinedScore,
+                    rating,
+                    isPredicted
+                };
+            });
+    
+            finalResults.sort((a, b) => b.combinedScore - a.combinedScore);
+            
+            this.ui.renderCharacterGrid(finalResults);
+            toastr.success(`Search complete.`);
+    
+        } catch (err) {
+            toastr.error(`Search failed: ${err.message}`);
+            console.error(err);
+        }
+    }
+
     getSortedCharacters() {
-        // 1. Map all characters to include calculated metrics
+        // Prepare list with necessary sort properties
         const charList = characters.map(c => {
             // Uniqueness
             const uItem = this.uniquenessData.find(u => u.avatar === c.avatar);
-            const uniquenessScore = uItem ? uItem.distance : 0;
+            const score = uItem ? uItem.distance : 0;
             
             // Rating (Manual or Predicted)
             let rating = this.getRating(c.avatar);
             let isPredicted = false;
-            let confidenceWidth = 0; 
+            let confidenceWidth = 0; // Default max confidence (width 0) for manual
 
             if (rating === 0 && this.predictedRatings.has(c.avatar)) {
                 const p = this.predictedRatings.get(c.avatar);
@@ -1445,42 +1563,23 @@ class CharacterSimilarityExtension {
 
             // Tokens (Proxy: Text Length)
             const text = FIELDS_TO_EMBED.map(f => c[f] || '').join('\n').trim();
-            const tokenCount = text.length;
+            const tokenProxy = text.length;
 
             return {
                 ...c,
-                uniquenessScore,
-                rating,
-                isPredicted,
-                confidenceWidth,
-                tokenCount
+                uniquenessScore: score,
+                rating: rating,
+                isPredicted: isPredicted,
+                confidenceWidth: confidenceWidth,
+                tokenCount: tokenProxy
             };
         });
 
-        let filteredList = charList;
-
-        // 2. Apply search filter if active
-        if (this.currentFilterResults) {
-            const filterSet = new Set(this.currentFilterResults);
-            filteredList = charList.filter(c => filterSet.has(c.avatar));
-            
-            // If sorting by name, prioritize search rank (which is the order in currentFilterResults)
-            if (this.ui.charSortMethod === 'name') {
-                 filteredList.sort((a, b) => {
-                    const idxA = this.currentFilterResults.indexOf(a.avatar);
-                    const idxB = this.currentFilterResults.indexOf(b.avatar);
-                    return idxA - idxB;
-                 });
-                 return filteredList; // Search rank is the primary sort order
-            }
-        }
-
-        // 3. Apply standard sorting
         const sortMethod = this.ui.charSortMethod;
         const sortOrder = this.ui.charSortOrder;
         const mult = sortOrder === 'asc' ? 1 : -1;
 
-        filteredList.sort((a, b) => {
+        charList.sort((a, b) => {
             if (sortMethod === 'name') {
                 return a.name.localeCompare(b.name) * mult;
             } else if (sortMethod === 'uniqueness') {
@@ -1490,12 +1589,14 @@ class CharacterSimilarityExtension {
             } else if (sortMethod === 'rating') {
                 return (a.rating - b.rating) * mult;
             } else if (sortMethod === 'confidence') {
+                // Lower width = Higher confidence
+                // Manual ratings (width 0) come first in ASC
                 return (a.confidenceWidth - b.confidenceWidth) * mult;
             }
             return 0;
         });
 
-        return filteredList;
+        return charList;
     }
 
     populateLists() {
@@ -1544,9 +1645,7 @@ class CharacterSimilarityExtension {
             this.validCaches = this.service.getValidCaches(this.dataItems);
 
             if(this.validCaches.length === 0) {
-                // If we failed to get a live cache, we rely on the user to fix the Kobold URL
-                // We don't throw an error here but let the rest proceed with empty caches.
-                console.warn("No valid embedding caches available.");
+                throw new Error("No valid embedding caches available.");
             }
             
             this.runUniqueness();
@@ -1563,111 +1662,6 @@ class CharacterSimilarityExtension {
     clearCache() {
         this.service.clearCache();
     }
-
-    // --- Search Logic ---
-
-    clearSearch() {
-        this.currentFilterResults = null;
-        this.populateLists();
-        $('#charSimBtn_clearSearch').hide();
-    }
-    
-    async runSearch(searchTerm) {
-        searchTerm = searchTerm.trim();
-        
-        if (!searchTerm) {
-            this.clearSearch();
-            return;
-        }
-        
-        $('#charSimBtn_clearSearch').show();
-        toastr.info(`Searching for "${searchTerm}"...`, "Similarity Search");
-
-        try {
-            const liveEmbeddings = this.service.getLiveEmbeddings();
-            const searchTermLower = searchTerm.toLowerCase();
-            const combinedScores = new Map();
-            let queryVector = null;
-            let embeddingSearchAttempted = false;
-
-            // --- 2. Embedding Search (Similarity Match) ---
-            if (liveEmbeddings.size >= 2) {
-                embeddingSearchAttempted = true;
-                const url = this.service.koboldUrl;
-                if (url) {
-                    const response = await fetch('/api/backends/kobold/embed', {
-                        method: 'POST',
-                        headers: getRequestHeaders(),
-                        body: JSON.stringify({
-                            items: [searchTerm],
-                            server: url,
-                        }),
-                    });
-
-                    if (response.ok) {
-                        const data = await response.json();
-                        queryVector = data.embeddings && data.embeddings.length > 0 ? data.embeddings[0] : null;
-                    }
-                }
-            }
-            
-            if (queryVector) {
-                for (const [avatar, charVector] of liveEmbeddings.entries()) {
-                    const similarity = ComputeEngine.calculateCosineSimilarity(queryVector, charVector);
-                    combinedScores.set(avatar, similarity);
-                }
-            } else if (embeddingSearchAttempted) {
-                 toastr.warning("Embedding search failed or model cache incomplete. Running fuzzy search only.", "Similarity Search");
-            }
-            
-            // --- 1. Fuzzy Search (Text Match) & Merge ---
-            for (const char of characters) {
-                const text = FIELDS_TO_EMBED.map(f => char[f] || '').join(' ').toLowerCase();
-                let fuzzyScore = 0;
-                
-                if (char.name.toLowerCase().includes(searchTermLower)) {
-                    fuzzyScore = 1.0;
-                } else if (text.includes(searchTermLower)) {
-                    fuzzyScore = 0.5;
-                }
-                
-                if (fuzzyScore > 0 || combinedScores.has(char.avatar)) {
-                    const currentSimScore = combinedScores.get(char.avatar) || 0;
-                    // Combine score: Similarity (0-1) + Fuzzy Boost (0-1)
-                    combinedScores.set(char.avatar, currentSimScore + fuzzyScore); 
-                }
-            }
-
-            // Convert map back to list and calculate final search rank
-            let finalResults = [];
-            for (const [avatar, combinedScore] of combinedScores.entries()) {
-                // Keep only results above a low relevance threshold (0.45 chosen to capture all 0.5 fuzzy matches or strong embedding matches)
-                if (combinedScore > 0.45) { 
-                     finalResults.push({ avatar, score: combinedScore });
-                }
-            }
-
-            // Sort by combined score descending
-            finalResults.sort((a, b) => b.score - a.score);
-            
-            // Store just the avatar list for filtering
-            this.currentFilterResults = finalResults.map(r => r.avatar);
-            
-            this.populateLists();
-            
-            if (finalResults.length === 0) {
-                 toastr.warning(`Search finished. Found 0 relevant characters for "${searchTerm}".`, "Similarity Search");
-            } else {
-                 toastr.success(`Search finished. Found ${finalResults.length} relevant characters.`, "Similarity Search");
-            }
-
-        } catch (e) {
-            toastr.error(e.message, "Search Failed");
-            console.error("Search failed:", e);
-            this.clearSearch();
-        }
-    }
-
 
     runUniqueness() {
         if (this.validCaches.length === 0) return;
@@ -1737,7 +1731,7 @@ class CharacterSimilarityExtension {
                 this.ui.renderUniquenessList(this.uniquenessData, $('#charSimBtn_sort').hasClass('fa-arrow-down'));
                 this.populateLists(); // Trigger re-sort of char list to update counts if needed
                 
-                toastr.success(`Calculated uniqueness using ${modelCount} model(s).`);
+                toastr.success(`Calculated using ${modelCount} model(s).`);
 
             } catch (e) {
                 toastr.error("Error calculating uniqueness: " + e.message);
