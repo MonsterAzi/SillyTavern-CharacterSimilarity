@@ -788,9 +788,6 @@ class UIManager {
 
         // Details View Navigation
         $('#charSimList_characters').on('click', '.charSim-grid-card', (e) => {
-             const avatar = $(e.currentTarget).attr('title'); // Using title as lookup or better attach data attribute
-             // Ideally re-find from character array by name or index
-             // Let's refactor renderCharacterGrid to include data-avatar
              const actualAvatar = $(e.currentTarget).data('avatar');
              this.showCharacterDetails(actualAvatar);
         });
@@ -868,8 +865,7 @@ class UIManager {
 
         const container = $('.charSim-details-content');
         
-        // Safe access to fields
-        const creator = char.creator || char.create_date || "Unknown";
+        const creatorNotes = char.creator_notes || "No creator notes available.";
         const desc = char.description || "";
         const personality = char.personality || "";
         const scenario = char.scenario || "";
@@ -881,7 +877,7 @@ class UIManager {
                 <img src="${getThumbnailUrl('avatar', avatar)}" class="charSim-details-img">
                 <div class="charSim-details-info">
                     <h1>${char.name}</h1>
-                    <div class="charSim-creator-notes">Creator: ${creator}</div>
+                    <div class="charSim-creator-notes">${creatorNotes}</div>
                 </div>
             </div>
             
@@ -915,7 +911,6 @@ class UIManager {
 
         container.html(html);
         
-        // Switch Views
         $('.charSim-view').removeClass('active');
         $('#charSimView_details').addClass('active');
     }
@@ -977,7 +972,6 @@ class CharacterSimilarityExtension {
     async refreshAnalysis() {
         this.isProcessing = true;
         try {
-            // 1. Prepare Data & Hashes
             const texts = [];
             for(const char of characters) {
                 const text = FIELDS_TO_EMBED.map(f => char[f] || '').join('\n').trim();
@@ -990,17 +984,14 @@ class CharacterSimilarityExtension {
 
             if (this.dataItems.length === 0) throw new Error("No valid characters found.");
 
-            // 2. Update Live Cache (Fetch missing)
             await this.service.updateLiveCache(this.dataItems);
 
-            // 3. Collect ALL valid caches (Multi-Model)
             this.validCaches = this.service.getValidCaches(this.dataItems);
 
             if(this.validCaches.length === 0) {
                 throw new Error("No valid embedding caches available.");
             }
             
-            // 4. Run Calculation
             this.runUniqueness();
 
         } catch (err) {
@@ -1025,7 +1016,6 @@ class CharacterSimilarityExtension {
                 
                 const compositeScores = new Map(); 
                 
-                // Run algorithm on EACH model cache independently
                 for(const cacheObj of this.validCaches) {
                     const embeddingMap = cacheObj.map;
                     let rawResults = [];

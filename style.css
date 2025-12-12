@@ -262,7 +262,7 @@
 
 .charSim-details-img {
     width: 150px;
-    height: 150px;
+    height: 225px; /* 2:3 aspect ratio */
     border-radius: 12px;
     object-fit: cover;
     box-shadow: 0 5px 15px rgba(0,0,0,0.3);
