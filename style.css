@@ -100,7 +100,7 @@
 }
 
 /* Controls Bar */
-.charSim-controls, .charSim-search-bar {
+.charSim-controls, .charSim-search-bar, .charSim-details-toolbar {
     display: flex;
     align-items: center;
     gap: 10px;
@@ -242,4 +242,76 @@
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     line-height: 1.2;
+}
+
+/* Character Details View */
+.charSim-details-content {
+    flex-grow: 1;
+    overflow-y: auto;
+    padding: 20px;
+}
+
+.charSim-details-header {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 20px;
+}
+
+.charSim-details-img {
+    width: 150px;
+    height: 150px;
+    border-radius: 12px;
+    object-fit: cover;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+    border: 2px solid var(--border-color);
+}
+
+.charSim-details-info h1 {
+    margin: 0 0 5px 0;
+    font-size: 2em;
+}
+
+.charSim-creator-notes {
+    color: var(--text-color-secondary);
+    font-style: italic;
+}
+
+.charSim-details-toggle {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    background: var(--background-color-sub);
+    border-radius: 8px;
+    cursor: pointer;
+    user-select: none;
+    font-weight: bold;
+    margin-bottom: 10px;
+}
+
+.charSim-details-toggle:hover {
+    background: var(--background-color-hover);
+}
+
+.charSim-field {
+    margin-bottom: 15px;
+}
+
+.charSim-field label {
+    display: block;
+    font-weight: bold;
+    margin-bottom: 5px;
+    color: var(--smart-theme-color);
+}
+
+.charSim-field-text {
+    white-space: pre-wrap;
+    background: var(--background-color-sub);
+    padding: 10px;
+    border-radius: 8px;
+    font-size: 0.95em;
+    line-height: 1.5;
 }

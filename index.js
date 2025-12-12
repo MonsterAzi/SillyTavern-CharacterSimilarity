@@ -715,6 +715,15 @@ class UIManager {
                             <!-- Grid Items Injected Here -->
                         </div>
                     </div>
+                    
+                    <div id="charSimView_details" class="charSim-view">
+                        <div class="charSim-details-toolbar">
+                             <div class="menu_button" id="charSimBtn_back"><i class="fa-solid fa-arrow-left"></i> Back</div>
+                        </div>
+                        <div class="charSim-details-content">
+                            <!-- Injected content -->
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>`;
@@ -749,7 +758,7 @@ class UIManager {
             $(`#charSimView_${tab}`).addClass('active');
         });
 
-        // Actions
+        // Sort
         $('#charSimBtn_sort').on('click', (e) => {
             $(e.currentTarget).toggleClass('fa-arrow-down fa-arrow-up');
             this.ext.toggleSort();
@@ -776,13 +785,40 @@ class UIManager {
                 $(this).toggle(name.includes(term));
             });
         });
+
+        // Details View Navigation
+        $('#charSimList_characters').on('click', '.charSim-grid-card', (e) => {
+             const avatar = $(e.currentTarget).attr('title'); // Using title as lookup or better attach data attribute
+             // Ideally re-find from character array by name or index
+             // Let's refactor renderCharacterGrid to include data-avatar
+             const actualAvatar = $(e.currentTarget).data('avatar');
+             this.showCharacterDetails(actualAvatar);
+        });
+
+        $('#charSimBtn_back').on('click', () => {
+             $('#charSimView_details').removeClass('active');
+             $('#charSimView_characters').addClass('active');
+        });
+
+        // Details Toggle
+        $('#characterSimilarityPanel').on('click', '.charSim-details-toggle', function() {
+             const content = $('.charSim-details-advanced');
+             const icon = $(this).find('i');
+             
+             if (content.is(':visible')) {
+                 content.slideUp();
+                 icon.removeClass('fa-eye').addClass('fa-eye-slash');
+             } else {
+                 content.slideDown();
+                 icon.removeClass('fa-eye-slash').addClass('fa-eye');
+             }
+        });
     }
 
     toggleParamInput(method) {
         const show = ['isolation', 'lof', 'knn', 'lunar'].includes(method);
         $('#charSim_param_container').css('display', show ? 'flex' : 'none');
         
-        // Update Label contextually
         let label = "N:";
         if (method === 'isolation') label = "Trees:";
         if (method === 'lof' || method === 'knn' || method === 'lunar') label = "k:";
@@ -816,7 +852,7 @@ class UIManager {
         }
 
         const html = charList.map(c => `
-            <div class="charSim-grid-card" title="${c.name}">
+            <div class="charSim-grid-card" title="${c.name}" data-avatar="${c.avatar}">
                 <div class="charSim-card-img-wrapper">
                     <img src="${getThumbnailUrl('avatar', c.avatar)}" loading="lazy" />
                 </div>
@@ -824,6 +860,64 @@ class UIManager {
             </div>
         `).join('');
         container.html(html);
+    }
+
+    showCharacterDetails(avatar) {
+        const char = characters.find(c => c.avatar === avatar);
+        if (!char) return;
+
+        const container = $('.charSim-details-content');
+        
+        // Safe access to fields
+        const creator = char.creator || char.create_date || "Unknown";
+        const desc = char.description || "";
+        const personality = char.personality || "";
+        const scenario = char.scenario || "";
+        const firstMes = char.first_mes || "";
+        const mesEx = char.mes_example || "";
+
+        const html = `
+            <div class="charSim-details-header">
+                <img src="${getThumbnailUrl('avatar', avatar)}" class="charSim-details-img">
+                <div class="charSim-details-info">
+                    <h1>${char.name}</h1>
+                    <div class="charSim-creator-notes">Creator: ${creator}</div>
+                </div>
+            </div>
+            
+            <div class="charSim-details-toggle">
+                <i class="fa-solid fa-eye-slash"></i> Show Character Data
+            </div>
+            
+            <div class="charSim-details-advanced" style="display:none;">
+                <div class="charSim-field">
+                    <label>Description</label>
+                    <div class="charSim-field-text">${desc}</div>
+                </div>
+                <div class="charSim-field">
+                    <label>Personality</label>
+                    <div class="charSim-field-text">${personality}</div>
+                </div>
+                <div class="charSim-field">
+                    <label>Scenario</label>
+                    <div class="charSim-field-text">${scenario}</div>
+                </div>
+                <div class="charSim-field">
+                    <label>First Message</label>
+                    <div class="charSim-field-text">${firstMes}</div>
+                </div>
+                <div class="charSim-field">
+                    <label>Message Examples</label>
+                    <div class="charSim-field-text">${mesEx}</div>
+                </div>
+            </div>
+        `;
+
+        container.html(html);
+        
+        // Switch Views
+        $('.charSim-view').removeClass('active');
+        $('#charSimView_details').addClass('active');
     }
 
     createEmptyState(msg) {
@@ -839,8 +933,8 @@ class CharacterSimilarityExtension {
         this.settings = Object.assign({}, DEFAULT_SETTINGS, extension_settings[EXTENSION_NAME] || {});
         extension_settings[EXTENSION_NAME] = this.settings;
 
-        this.dataItems = []; // { avatar, text, hash }
-        this.validCaches = []; // Array of { modelName, map }
+        this.dataItems = []; 
+        this.validCaches = []; 
         this.uniquenessData = [];
         this.isProcessing = false;
         
@@ -875,7 +969,6 @@ class CharacterSimilarityExtension {
         $('#characterSimilarityPanel').addClass('open');
         this.populateLists();
         
-        // Start full analysis workflow
         if (!this.isProcessing) {
             await this.refreshAnalysis();
         }
@@ -930,8 +1023,7 @@ class CharacterSimilarityExtension {
                 const method = this.settings.uniquenessMethod;
                 const n = this.settings.uniquenessN || 20;
                 
-                // Composite Score Accumulator
-                const compositeScores = new Map(); // avatar -> totalScore
+                const compositeScores = new Map(); 
                 
                 // Run algorithm on EACH model cache independently
                 for(const cacheObj of this.validCaches) {
@@ -966,17 +1058,14 @@ class CharacterSimilarityExtension {
                             break;
                     }
 
-                    // Normalize this model's results (0-1)
                     const normalized = ComputeEngine.normalizeScores(rawResults);
                     
-                    // Accumulate
                     for(const item of normalized) {
                         const prev = compositeScores.get(item.avatar) || 0;
                         compositeScores.set(item.avatar, prev + item.distance);
                     }
                 }
 
-                // Average the scores
                 const finalResults = [];
                 const modelCount = this.validCaches.length;
                 
