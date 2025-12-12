@@ -302,43 +302,115 @@ class ComputeEngine {
      * Parameter-free. Estimates tail probabilities for each dimension.
      */
     static computeECOD(embeddingMap) {
-        const entries = Array.from(embeddingMap.entries()); // [[avatar, vec], ...]
+        const entries = Array.from(embeddingMap.entries());
         const data = entries.map(e => e[1]);
         const n = data.length;
         if (n === 0) return [];
         const dim = data[0].length;
         
-        // Initialize scores
         const scores = new Float32Array(n).fill(0);
 
-        // Process per dimension
         for (let d = 0; d < dim; d++) {
-            // Extract column
             const column = new Float32Array(n);
             for(let i=0; i<n; i++) column[i] = data[i][d];
             
-            // Create rank indices
             const indices = new Int32Array(n);
             for(let i=0; i<n; i++) indices[i] = i;
             
             indices.sort((a, b) => column[a] - column[b]);
             
-            // Calculate ECDF probabilities
-            // Left tail: P(X <= x)
-            // Right tail: P(X >= x)
-            // Using (r + 1) / (n + 1) for smoothing
-            
             for(let r=0; r<n; r++) {
                 const originalIndex = indices[r];
-                
                 const pLeft = (r + 1) / (n + 1);
                 const pRight = (n - r) / (n + 1);
-                
-                // Score is the log of the inverse probability (skewness independent)
                 const sLeft = -Math.log(pLeft);
                 const sRight = -Math.log(pRight);
                 
                 scores[originalIndex] += Math.max(sLeft, sRight);
+            }
+        }
+        
+        const results = [];
+        for (let i = 0; i < n; i++) {
+            results.push({ avatar: entries[i][0], distance: scores[i] });
+        }
+        return results;
+    }
+
+    /**
+     * Algorithm 6: HBOS (Histogram-based Outlier Score)
+     * Assumes feature independence. Uses dynamic binning (Birge-Rozenblac/Scott's Rule).
+     */
+    static computeHBOS(embeddingMap) {
+        const entries = Array.from(embeddingMap.entries());
+        const data = entries.map(e => e[1]);
+        const n = data.length;
+        if (n === 0) return [];
+        const dim = data[0].length;
+        
+        const scores = new Float32Array(n).fill(0);
+
+        for (let d = 0; d < dim; d++) {
+            // 1. Extract Column and Stats
+            let min = Infinity, max = -Infinity;
+            const col = new Float32Array(n);
+            let sum = 0;
+
+            for(let i=0; i<n; i++) {
+                const val = data[i][d];
+                col[i] = val;
+                sum += val;
+                if(val < min) min = val;
+                if(val > max) max = val;
+            }
+
+            const mean = sum / n;
+            let sqDiff = 0;
+            for(let x of col) sqDiff += (x - mean) * (x - mean);
+            const std = Math.sqrt(sqDiff / n);
+
+            // 2. Determine Bin Count (Scott's Rule / Birge-Rozenblac Proxy)
+            // k = (max - min) / (3.5 * std * n^(-1/3))
+            let binCount = 10; 
+            if (std > 0) {
+                const binWidth = (3.5 * std) / Math.pow(n, 1/3);
+                if (binWidth > 0) {
+                    binCount = Math.ceil((max - min) / binWidth);
+                }
+            }
+            // Clamp safe limits
+            binCount = Math.max(5, Math.min(binCount, Math.floor(n), 50));
+            
+            // 3. Build Histogram
+            const hist = new Int32Array(binCount).fill(0);
+            const range = max - min;
+            const step = range / binCount;
+            
+            if (step > 0) {
+                for(let i=0; i<n; i++) {
+                    let binIdx = Math.floor((col[i] - min) / step);
+                    if (binIdx >= binCount) binIdx = binCount - 1;
+                    hist[binIdx]++;
+                }
+            } else {
+                hist[0] = n; // All same values
+            }
+
+            // 4. Calculate Score: Sum of Log(1/density) -> Sum of Log(n/count)
+            for(let i=0; i<n; i++) {
+                let binIdx = 0;
+                if (step > 0) {
+                    binIdx = Math.floor((col[i] - min) / step);
+                    if (binIdx >= binCount) binIdx = binCount - 1;
+                }
+                
+                const count = hist[binIdx];
+                if (count > 0) {
+                    scores[i] += Math.log(n / count);
+                } else {
+                    // Penalty for theoretically impossible empty bin hit
+                    scores[i] += Math.log(n); 
+                }
             }
         }
         
@@ -397,6 +469,7 @@ class UIManager {
                             
                             <select id="charSimSelect_method" class="text_pole charSim-select">
                                 <option value="mean">Global Mean Distance</option>
+                                <option value="hbos">HBOS (Birgé-Rozenblac)</option>
                                 <option value="ecod">ECOD (Parameter-free)</option>
                                 <option value="isolation">Isolation Forest</option>
                                 <option value="lof">Local Outlier Factor</option>
@@ -629,6 +702,9 @@ class CharacterSimilarityExtension {
                 let results = [];
 
                 switch (method) {
+                    case 'hbos':
+                        results = ComputeEngine.computeHBOS(this.embeddings);
+                        break;
                     case 'ecod':
                         results = ComputeEngine.computeECOD(this.embeddings);
                         break;
