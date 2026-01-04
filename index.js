@@ -508,7 +508,8 @@ class ComputeEngine {
         }));
     }
 
-    // --- Prediction ---
+        
+// --- Prediction ---
 
     static computePredictedRatings(embeddingMap, ratingsMap) {
         const trainX = [];
@@ -552,13 +553,18 @@ class ComputeEngine {
             // Clamp score
             let score = Math.max(0.5, Math.min(5.0, val));
             
-            // Calculate Interval Width (Confidence proxy)
-            // Smaller width = Higher confidence
-            const lower = predLow[idx];
-            const upper = predHigh[idx];
-            let width = Math.abs(upper - lower);
+            // Calculate Interval
+            let lower = Math.max(0, Math.min(5.0, predLow[idx]));
+            let upper = Math.max(0, Math.min(5.0, predHigh[idx]));
             
-            resultMap.set(predictAvatars[idx], { score, width });
+            // Sanity checks
+            if (lower > score) lower = score;
+            if (upper < score) upper = score;
+
+            // Width for sorting
+            const width = Math.abs(upper - lower);
+            
+            resultMap.set(predictAvatars[idx], { score, width, lower, upper });
         });
 
         return resultMap;
@@ -1253,13 +1259,26 @@ class UIManager {
                 starHtml += `<i class="fa-solid fa-star" style="${style}"></i>`;
             }
 
+            // Create confidence bar HTML
+            let barHtml = '';
+            if (isPredicted && c.predUpper > c.predLower) {
+                const leftPct = (c.predLower / 5) * 100;
+                const widthPct = ((c.predUpper - c.predLower) / 5) * 100;
+                barHtml = `<div class="charSim-confidence-bar" style="left:${leftPct}%; width:${widthPct}%;"></div>`;
+            }
+
             return `
             <div class="charSim-grid-card" title="${c.name}" data-avatar="${c.avatar}">
                 <div class="charSim-card-img-wrapper">
                     <img src="${getThumbnailUrl('avatar', c.avatar)}" loading="lazy" />
                 </div>
                 <div class="charSim-card-name">${c.name}</div>
-                <div class="charSim-grid-stars">${starHtml}</div>
+                <div class="charSim-grid-stars">
+                    <div class="charSim-stars-inner">
+                        ${starHtml}
+                        ${barHtml}
+                    </div>
+                </div>
             </div>`;
         }).join('');
         
@@ -1284,16 +1303,29 @@ class UIManager {
         let currentRating = this.ext.getRating(avatar);
         let isPredicted = false;
         let showReset = currentRating !== 0;
+        let predLower = 0;
+        let predUpper = 0;
 
         // If no manual rating, check for prediction
         if (currentRating === 0 && this.ext.predictedRatings.has(avatar)) {
-            currentRating = this.ext.predictedRatings.get(avatar).score;
+            const p = this.ext.predictedRatings.get(avatar);
+            currentRating = p.score;
+            predLower = p.lower;
+            predUpper = p.upper;
             isPredicted = true;
         }
 
         // Reset similar list state
         this.currentSimilarList = this.ext.getSimilarCharacters(avatar);
         this.currentSimilarOffset = 0;
+
+        // Construct Confidence Bar
+        let barHtml = '';
+        if (isPredicted && predUpper > predLower) {
+             const leftPct = (predLower / 5) * 100;
+             const widthPct = ((predUpper - predLower) / 5) * 100;
+             barHtml = `<div class="charSim-confidence-bar" style="left:${leftPct}%; width:${widthPct}%;"></div>`;
+        }
 
         const html = `
             <div class="charSim-details-header">
@@ -1307,6 +1339,7 @@ class UIManager {
                             <i class="fa-solid fa-star"></i>
                             <i class="fa-solid fa-star"></i>
                             <i class="fa-solid fa-star"></i>
+                            ${barHtml}
                         </div>
                         <div id="charSimRatingReset" class="menu_button fa-solid fa-rotate-left" title="Reset Rating" data-avatar="${avatar}" style="display:${showReset ? 'flex' : 'none'}; padding: 5px; width: 30px; height: 30px;"></div>
                     </div>
@@ -1583,12 +1616,16 @@ class CharacterSimilarityExtension {
             // Rating (Manual or Predicted)
             let rating = this.getRating(c.avatar);
             let isPredicted = false;
-            let confidenceWidth = 0; // Default max confidence (width 0) for manual
+            let confidenceWidth = 0; 
+            let predLower = 0;
+            let predUpper = 0;
 
             if (rating === 0 && this.predictedRatings.has(c.avatar)) {
                 const p = this.predictedRatings.get(c.avatar);
                 rating = p.score;
                 confidenceWidth = p.width;
+                predLower = p.lower;
+                predUpper = p.upper;
                 isPredicted = true;
             }
 
@@ -1602,6 +1639,8 @@ class CharacterSimilarityExtension {
                 rating: rating,
                 isPredicted: isPredicted,
                 confidenceWidth: confidenceWidth,
+                predLower: predLower,
+                predUpper: predUpper,
                 tokenCount: tokenProxy
             };
         });
