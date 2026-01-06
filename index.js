@@ -557,11 +557,11 @@ class ComputeEngine {
             let lower = Math.max(0, Math.min(5.0, predLow[idx]));
             let upper = Math.max(0, Math.min(5.0, predHigh[idx]));
             
-            // Sanity checks
+            // Sanity checks: Lower cannot be higher than score, Upper cannot be lower than score
             if (lower > score) lower = score;
             if (upper < score) upper = score;
 
-            // Width for sorting
+            // Width for sorting (still useful)
             const width = Math.abs(upper - lower);
             
             resultMap.set(predictAvatars[idx], { score, width, lower, upper });
@@ -1138,7 +1138,7 @@ class UIManager {
         $('#characterSimilarityPanel').on('mouseleave', '.charSim-rating-container', (e) => {
             const container = $(e.currentTarget);
             const avatar = container.data('avatar');
-            // Check for manual, then predicted
+            
             let value = this.ext.getRating(avatar);
             let isPredicted = false;
             let lower = 0;
@@ -1214,37 +1214,7 @@ class UIManager {
         });
     }
 
-
-    toggleParamInput(method) {
-        const show = ['isolation', 'lof', 'knn', 'lunar'].includes(method);
-        $('#charSim_param_container').css('display', show ? 'flex' : 'none');
-        
-        let label = "N:";
-        if (method === 'isolation') label = "Trees:";
-        if (method === 'lof' || method === 'knn' || method === 'lunar') label = "k:";
-        $('label[for="charSimInput_n"]').text(label);
-    }
-
-    renderUniquenessList(items, isDescending) {
-        const container = $('#charSimList_uniqueness');
-        if (!items || items.length === 0) {
-            container.html(this.createEmptyState("Processing..."));
-            return;
-        }
-
-        const sorted = [...items].sort((a, b) => isDescending ? b.distance - a.distance : a.distance - b.distance);
-
-        const html = sorted.map(item => `
-            <div class="charSim-item" data-avatar="${item.avatar}">
-                <img src="${getThumbnailUrl('avatar', item.avatar)}" />
-                <span class="charSim-item-name">${item.name}</span>
-                <span class="charSim-item-score" title="Score">${item.distance.toFixed(4)}</span>
-            </div>
-        `).join('');
-        container.html(html);
-    }
-
-    renderCharacterGrenderCharacterGrid(charList) {
+    renderCharacterGrid(charList) {
         const container = $('#charSimList_characters');
         if (!charList || charList.length === 0) {
             container.html(this.createEmptyState("No characters found."));
@@ -1256,26 +1226,24 @@ class UIManager {
             const isPredicted = c.isPredicted;
             
             // Determine bounds
+            // Fallback to rating if predLower/predUpper are undefined (safety check)
             let lower = rating;
             let upper = rating;
             
             if (isPredicted) {
-                lower = c.predLower !== undefined ? c.predLower : rating;
-                upper = c.predUpper !== undefined ? c.predUpper : rating;
+                lower = (c.predLower !== undefined) ? c.predLower : rating;
+                upper = (c.predUpper !== undefined) ? c.predUpper : rating;
             }
 
             // Colors
             // Solid: Blue (Predicted) or Gold (Manual)
             const colorSolid = isPredicted ? '#007bff' : '#ffd700'; 
-            // Faded: Lighter Blue (Predicted) or Gold (Manual - effectively invisible as width is 0)
+            // Faded: Lighter Blue (Predicted) or Gold (Manual)
             const colorFaded = isPredicted ? '#89CFF0' : '#ffd700';
             const colorEmpty = '#4a4a4a';
 
             let starHtml = '';
             for (let i = 0; i < 5; i++) {
-                // Calculate percentages for this specific star (0 to 100)
-                // Range of this star is [i, i+1]
-                
                 // p1: End of Solid section within this star
                 const valSolid = Math.max(0, Math.min(1, lower - i));
                 const p1 = valSolid * 100;
@@ -1286,13 +1254,11 @@ class UIManager {
 
                 let style = `color: ${colorEmpty};`;
                 
-                // Optimization: simple cases
-                if (p1 === 100) {
+                if (p1 >= 100) {
                     style = `color: ${colorSolid};`;
-                } else if (p2 === 0) {
+                } else if (p2 <= 0) {
                     style = `color: ${colorEmpty};`;
                 } else {
-                    // Gradient needed
                     style = `background: linear-gradient(90deg, 
                         ${colorSolid} 0%, ${colorSolid} ${p1}%, 
                         ${colorFaded} ${p1}%, ${colorFaded} ${p2}%, 
@@ -1433,8 +1399,8 @@ class UIManager {
 
     renderStars(container, value, isPredicted = false, lower = null, upper = null) {
         // Defaults if not provided (e.g. mouse interaction usually implies scalar value)
-        if (lower === null) lower = value;
-        if (upper === null) upper = value;
+        if (lower === null || lower === undefined) lower = value;
+        if (upper === null || upper === undefined) upper = value;
 
         const stars = container.find('i');
         const colorSolid = isPredicted ? '#007bff' : '#ffd700'; 
@@ -1452,9 +1418,9 @@ class UIManager {
             const valFadedEnd = Math.max(0, Math.min(1, upper - index));
             const p2 = valFadedEnd * 100;
 
-            if (p1 === 100) {
+            if (p1 >= 100) {
                 star.css('color', colorSolid);
-            } else if (p2 === 0) {
+            } else if (p2 <= 0) {
                 star.css('color', colorEmpty);
             } else {
                 star.css({
