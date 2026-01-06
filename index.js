@@ -553,18 +553,13 @@ class ComputeEngine {
             // Clamp score
             let score = Math.max(0.5, Math.min(5.0, val));
             
-            // Calculate Interval
-            let lower = Math.max(0, Math.min(5.0, predLow[idx]));
-            let upper = Math.max(0, Math.min(5.0, predHigh[idx]));
+            // Calculate Interval Width (Confidence proxy)
+            // Smaller width = Higher confidence
+            const lower = predLow[idx];
+            const upper = predHigh[idx];
+            let width = Math.abs(upper - lower);
             
-            // Sanity checks: Lower cannot be higher than score, Upper cannot be lower than score
-            if (lower > score) lower = score;
-            if (upper < score) upper = score;
-
-            // Width for sorting (still useful)
-            const width = Math.abs(upper - lower);
-            
-            resultMap.set(predictAvatars[idx], { score, width, lower, upper });
+            resultMap.set(predictAvatars[idx], { score, width });
         });
 
         return resultMap;
@@ -1138,24 +1133,16 @@ class UIManager {
         $('#characterSimilarityPanel').on('mouseleave', '.charSim-rating-container', (e) => {
             const container = $(e.currentTarget);
             const avatar = container.data('avatar');
-            
+            // Check for manual, then predicted
             let value = this.ext.getRating(avatar);
             let isPredicted = false;
-            let lower = 0;
-            let upper = 0;
             
             if (value === 0 && this.ext.predictedRatings.has(avatar)) {
-                const p = this.ext.predictedRatings.get(avatar);
-                value = p.score;
-                lower = p.lower;
-                upper = p.upper;
+                value = this.ext.predictedRatings.get(avatar).score;
                 isPredicted = true;
-            } else {
-                lower = value;
-                upper = value;
             }
             
-            this.renderStars(container, value, isPredicted, lower, upper);
+            this.renderStars(container, value, isPredicted);
         });
 
         $('#characterSimilarityPanel').on('click', '.charSim-rating-container', (e) => {
@@ -1188,18 +1175,12 @@ class UIManager {
             // Re-render based on potential prediction
             let value = 0;
             let isPredicted = false;
-            let lower = 0;
-            let upper = 0;
-
             if (this.ext.predictedRatings.has(avatar)) {
-                const p = this.ext.predictedRatings.get(avatar);
-                value = p.score;
-                lower = p.lower;
-                upper = p.upper;
+                value = this.ext.predictedRatings.get(avatar).score;
                 isPredicted = true;
             }
             
-            this.renderStars($('.charSim-rating-container'), value, isPredicted, lower, upper);
+            this.renderStars($('.charSim-rating-container'), value, isPredicted);
             $(e.currentTarget).hide();
             // Refresh list to update grid star view
             this.ext.populateLists();
@@ -1225,49 +1206,19 @@ class UIManager {
             const rating = c.rating || 0;
             const isPredicted = c.isPredicted;
             
-            // Determine bounds
-            // Fallback to rating if predLower/predUpper are undefined (safety check)
-            let lower = rating;
-            let upper = rating;
-            
-            if (isPredicted) {
-                lower = (c.predLower !== undefined) ? c.predLower : rating;
-                upper = (c.predUpper !== undefined) ? c.predUpper : rating;
-            }
-
-            // Colors
-            // Solid: Blue (Predicted) or Gold (Manual)
-            const colorSolid = isPredicted ? '#007bff' : '#ffd700'; 
-            // Faded: Lighter Blue (Predicted) or Gold (Manual)
-            const colorFaded = isPredicted ? '#89CFF0' : '#ffd700';
-            const colorEmpty = '#4a4a4a';
-
+            // Create mini star HTML string
             let starHtml = '';
             for (let i = 0; i < 5; i++) {
-                // p1: End of Solid section within this star
-                const valSolid = Math.max(0, Math.min(1, lower - i));
-                const p1 = valSolid * 100;
+                const diff = rating - i;
+                const color = isPredicted ? '#89CFF0' : '#ffd700';
+                const emptyColor = '#4a4a4a';
+                let style = `color: ${emptyColor};`;
                 
-                // p2: End of Faded section within this star
-                const valFadedEnd = Math.max(0, Math.min(1, upper - i));
-                const p2 = valFadedEnd * 100;
-
-                let style = `color: ${colorEmpty};`;
-                
-                if (p1 >= 100) {
-                    style = `color: ${colorSolid};`;
-                } else if (p2 <= 0) {
-                    style = `color: ${colorEmpty};`;
-                } else {
-                    style = `background: linear-gradient(90deg, 
-                        ${colorSolid} 0%, ${colorSolid} ${p1}%, 
-                        ${colorFaded} ${p1}%, ${colorFaded} ${p2}%, 
-                        ${colorEmpty} ${p2}%, ${colorEmpty} 100%); 
-                        -webkit-background-clip: text; 
-                        -webkit-text-fill-color: transparent; 
-                        color: transparent; 
-                        text-shadow: none; 
-                        -webkit-text-stroke: 0;`;
+                if (diff >= 1) {
+                    style = `color: ${color};`;
+                } else if (diff > 0) {
+                    const percent = diff * 100;
+                    style = `background: linear-gradient(90deg, ${color} ${percent}%, ${emptyColor} ${percent}%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; color: transparent; text-shadow: none; -webkit-text-stroke: 0;`;
                 }
                 
                 starHtml += `<i class="fa-solid fa-star" style="${style}"></i>`;
@@ -1279,11 +1230,7 @@ class UIManager {
                     <img src="${getThumbnailUrl('avatar', c.avatar)}" loading="lazy" />
                 </div>
                 <div class="charSim-card-name">${c.name}</div>
-                <div class="charSim-grid-stars">
-                    <div class="charSim-stars-inner">
-                        ${starHtml}
-                    </div>
-                </div>
+                <div class="charSim-grid-stars">${starHtml}</div>
             </div>`;
         }).join('');
         
@@ -1308,15 +1255,10 @@ class UIManager {
         let currentRating = this.ext.getRating(avatar);
         let isPredicted = false;
         let showReset = currentRating !== 0;
-        let predLower = 0;
-        let predUpper = 0;
 
         // If no manual rating, check for prediction
         if (currentRating === 0 && this.ext.predictedRatings.has(avatar)) {
-            const p = this.ext.predictedRatings.get(avatar);
-            currentRating = p.score;
-            predLower = p.lower;
-            predUpper = p.upper;
+            currentRating = this.ext.predictedRatings.get(avatar).score;
             isPredicted = true;
         }
 
@@ -1379,7 +1321,7 @@ class UIManager {
         container.html(html);
         
         // Initial star render
-        this.renderStars($('.charSim-rating-container'), currentRating, isPredicted, predLower, predUpper);
+        this.renderStars($('.charSim-rating-container'), currentRating, isPredicted);
 
         // Initial load of similar items
         this.loadNextSimilarBatch();
@@ -1397,43 +1339,34 @@ class UIManager {
         $('#charSimView_details').addClass('active');
     }
 
-    renderStars(container, value, isPredicted = false, lower = null, upper = null) {
-        // Defaults if not provided (e.g. mouse interaction usually implies scalar value)
-        if (lower === null || lower === undefined) lower = value;
-        if (upper === null || upper === undefined) upper = value;
-
+    renderStars(container, value, isPredicted = false) {
         const stars = container.find('i');
-        const colorSolid = isPredicted ? '#007bff' : '#ffd700'; 
-        const colorFaded = isPredicted ? '#89CFF0' : '#ffd700';
-        const colorEmpty = '#4a4a4a';
+        const color = isPredicted ? '#89CFF0' : '#ffd700'; // Light Blue vs Gold
+        const emptyColor = '#4a4a4a'; 
 
         stars.each((index, el) => {
             const star = $(el);
             star.removeAttr('style'); 
-
-            // Calculate percentages for this specific star (0 to 100)
-            const valSolid = Math.max(0, Math.min(1, lower - index));
-            const p1 = valSolid * 100;
             
-            const valFadedEnd = Math.max(0, Math.min(1, upper - index));
-            const p2 = valFadedEnd * 100;
-
-            if (p1 >= 100) {
-                star.css('color', colorSolid);
-            } else if (p2 <= 0) {
-                star.css('color', colorEmpty);
-            } else {
+            const diff = value - index;
+            
+            if (diff >= 1) {
+                // Full star
+                star.css('color', color);
+            } else if (diff > 0) {
+                // Partial star
+                const percent = diff * 100;
                 star.css({
-                    'background': `linear-gradient(90deg, 
-                        ${colorSolid} 0%, ${colorSolid} ${p1}%, 
-                        ${colorFaded} ${p1}%, ${colorFaded} ${p2}%, 
-                        ${colorEmpty} ${p2}%, ${colorEmpty} 100%)`,
+                    'background': `linear-gradient(90deg, ${color} ${percent}%, ${emptyColor} ${percent}%)`,
                     '-webkit-background-clip': 'text',
                     '-webkit-text-fill-color': 'transparent',
-                    'color': 'transparent', 
-                    'text-shadow': 'none', 
+                    'color': 'transparent',
+                    'text-shadow': 'none',
                     '-webkit-text-stroke': '0'
                 });
+            } else {
+                // Empty star
+                star.css('color', emptyColor);
             }
         });
         
@@ -1619,16 +1552,12 @@ class CharacterSimilarityExtension {
             // Rating (Manual or Predicted)
             let rating = this.getRating(c.avatar);
             let isPredicted = false;
-            let confidenceWidth = 0; 
-            let predLower = 0;
-            let predUpper = 0;
+            let confidenceWidth = 0; // Default max confidence (width 0) for manual
 
             if (rating === 0 && this.predictedRatings.has(c.avatar)) {
                 const p = this.predictedRatings.get(c.avatar);
                 rating = p.score;
                 confidenceWidth = p.width;
-                predLower = p.lower;
-                predUpper = p.upper;
                 isPredicted = true;
             }
 
@@ -1642,8 +1571,6 @@ class CharacterSimilarityExtension {
                 rating: rating,
                 isPredicted: isPredicted,
                 confidenceWidth: confidenceWidth,
-                predLower: predLower,
-                predUpper: predUpper,
                 tokenCount: tokenProxy
             };
         });

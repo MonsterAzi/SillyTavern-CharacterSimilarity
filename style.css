@@ -246,17 +246,12 @@
 
 /* Mini stars in grid */
 .charSim-grid-stars {
-    width: 100%;
     display: flex;
-    justify-content: center;
-    margin-top: 5px;
-}
-
-.charSim-stars-inner {
-    position: relative;
-    display: inline-flex;
     gap: 2px;
+    margin-top: 5px;
     font-size: 0.8em;
+    justify-content: center;
+    width: 100%;
 }
 
 .charSim-grid-stars i {
@@ -344,17 +339,6 @@
     cursor: pointer;
     font-size: 1.5em;
     color: #ffd700; 
-    position: relative; /* Essential for bar positioning */
-}
-
-.charSim-confidence-bar {
-    position: absolute;
-    bottom: -4px;
-    height: 3px;
-    background: rgba(137, 207, 240, 0.6); /* Semi-transparent Blue */
-    border-radius: 2px;
-    pointer-events: none;
-    z-index: 10;
 }
 
 .charSim-rating-container i {
